@@ -27,6 +27,10 @@ static volatile bool g_bRunning = false;
 static HINSTANCE g_hInst = NULL;
 static DWORD g_dwCmd = 0;
 
+// Transfer planner state
+static OBJHANDLE g_hTarget = NULL;
+static bool g_bTargetIsVessel = false;
+
 // Forward declarations
 static void PrintVessel();
 static void PrintOrbit();
@@ -40,6 +44,12 @@ static void PrintThrottle(const char* arg);
 static void PrintFuel();
 static void PrintWarp(const char* arg);
 static void PrintMap(const char* arg);
+static void PrintTarget(const char* arg);
+static void PrintTransfer(const char* arg);
+static void PrintHohmann();
+static void PrintPhase();
+static void PrintPlane();
+static void PrintRendezvous();
 static unsigned __stdcall ConsoleThread(void* param);
 
 // Helper to get navmode name
@@ -148,6 +158,276 @@ static void FormatLatLon(double lat, double lon, char* buf, int len) {
     char lonDir = (lon >= 0) ? 'E' : 'W';
     _snprintf(buf, len, "%.2f%c%c, %.2f%c%c", latDeg, 0xB0, latDir, lonDeg, 0xB0, lonDir);
     buf[len-1] = '\0';
+}
+
+// === TRANSFER CALCULATION STRUCTURES ===
+
+struct HohmannTransfer {
+    double departDV;     // m/s
+    double arriveDV;     // m/s
+    double totalDV;      // m/s
+    double transferTime; // seconds
+    bool valid;
+};
+
+struct PhaseAngleData {
+    double currentPhase;  // degrees
+    double requiredPhase; // degrees
+    double phaseDiff;     // degrees (positive = wait, negative = missed)
+    double timeToWindow;  // seconds
+    bool valid;
+};
+
+struct PlaneChangeData {
+    double relInc;        // degrees
+    double planeChangeDV; // m/s
+    double nodeAngle;     // degrees from current position to AN
+    bool valid;
+};
+
+struct RendezvousData {
+    double distance;      // m
+    double closureRate;   // m/s (positive = approaching)
+    double relVelMag;     // m/s
+    VECTOR3 relVel;       // local frame relative velocity
+    double timeToClose;   // seconds at current rate
+    bool valid;
+};
+
+// Gravitational constant
+static const double G_CONST = 6.67430e-11;  // m^3 kg^-1 s^-2
+
+// Get GM (gravitational parameter) for a body
+static double GetGM(OBJHANDLE hBody) {
+    double mass = oapiGetMass(hBody);
+    return G_CONST * mass;
+}
+
+// Calculate Hohmann transfer between two circular orbits
+// r1 = departure orbit radius, r2 = target orbit radius, gm = gravitational parameter
+static HohmannTransfer CalcHohmann(double r1, double r2, double gm) {
+    HohmannTransfer ht = {0, 0, 0, 0, false};
+
+    if (r1 <= 0 || r2 <= 0 || gm <= 0) return ht;
+
+    double a_t = (r1 + r2) / 2.0;  // Transfer orbit semi-major axis
+
+    // Circular velocity at r1
+    double v1_circ = sqrt(gm / r1);
+
+    // Transfer orbit velocity at r1 (periapsis if r2 > r1, apoapsis if r2 < r1)
+    double v1_trans = sqrt(gm * (2.0 / r1 - 1.0 / a_t));
+
+    // Circular velocity at r2
+    double v2_circ = sqrt(gm / r2);
+
+    // Transfer orbit velocity at r2
+    double v2_trans = sqrt(gm * (2.0 / r2 - 1.0 / a_t));
+
+    // Delta-V calculations
+    if (r2 > r1) {
+        // Raising orbit: burn prograde at r1, then prograde at r2
+        ht.departDV = v1_trans - v1_circ;
+        ht.arriveDV = v2_circ - v2_trans;
+    } else {
+        // Lowering orbit: burn retrograde at r1, then retrograde at r2
+        ht.departDV = v1_circ - v1_trans;
+        ht.arriveDV = v2_trans - v2_circ;
+    }
+
+    ht.totalDV = fabs(ht.departDV) + fabs(ht.arriveDV);
+
+    // Transfer time = half the transfer orbit period
+    ht.transferTime = PI * sqrt(a_t * a_t * a_t / gm);
+
+    ht.valid = true;
+    return ht;
+}
+
+// Calculate phase angle data between vessel and target
+// Returns current phase, required phase for Hohmann, and time to window
+static PhaseAngleData CalcPhaseAngle(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef) {
+    PhaseAngleData pa = {0, 0, 0, 0, false};
+
+    if (!v || !hTarget || !hRef) return pa;
+
+    // Get vessel orbital elements
+    ELEMENTS el_v;
+    ORBITPARAM prm_v;
+    if (!v->GetElements(hRef, el_v, &prm_v, 0, FRAME_ECL)) return pa;
+
+    // Skip if vessel is on escape trajectory
+    if (el_v.e >= 1.0) return pa;
+
+    // Get vessel's true longitude (angle from reference direction)
+    double vesselTrL = prm_v.TrL;  // True longitude in radians
+
+    // Get target position
+    VECTOR3 targetPos, refPos;
+    oapiGetGlobalPos(hTarget, &targetPos);
+    oapiGetGlobalPos(hRef, &refPos);
+    VECTOR3 relTargetPos = targetPos - refPos;
+
+    // Calculate target's angular position (in ecliptic plane)
+    double targetAngle = atan2(relTargetPos.z, relTargetPos.x);
+    if (targetAngle < 0) targetAngle += 2.0 * PI;
+
+    // Current phase angle (target ahead of vessel is positive)
+    double currentPhase = targetAngle - vesselTrL;
+    while (currentPhase < 0) currentPhase += 2.0 * PI;
+    while (currentPhase >= 2.0 * PI) currentPhase -= 2.0 * PI;
+
+    pa.currentPhase = currentPhase * DEG;
+
+    // Calculate required phase angle for Hohmann transfer
+    double gm = GetGM(hRef);
+    double r1 = el_v.a * (1.0 - el_v.e * el_v.e) / (1.0 + el_v.e * cos(prm_v.TrA));  // Current radius
+    double r2 = length(relTargetPos);  // Target radius (assuming circular)
+
+    double a_t = (r1 + r2) / 2.0;
+    double transferTime = PI * sqrt(a_t * a_t * a_t / gm);
+
+    // Target angular velocity (assuming circular orbit)
+    double targetPeriod = 2.0 * PI * sqrt(r2 * r2 * r2 / gm);
+    double targetAngVel = 2.0 * PI / targetPeriod;  // rad/s
+
+    // Required phase = 180 degrees minus angle target travels during transfer
+    double requiredPhase = PI - targetAngVel * transferTime;
+    while (requiredPhase < 0) requiredPhase += 2.0 * PI;
+
+    pa.requiredPhase = requiredPhase * DEG;
+
+    // Phase difference and time to window
+    double phaseDiff = requiredPhase - currentPhase * RAD / DEG * RAD;  // Convert back properly
+    phaseDiff = (requiredPhase * RAD) - currentPhase * RAD;
+
+    // Synodic period calculation
+    double vesselAngVel = 2.0 * PI / prm_v.T;
+    double synodicRate = fabs(vesselAngVel - targetAngVel);
+
+    if (synodicRate > 1e-10) {
+        // Normalize phase difference
+        double diff = (pa.requiredPhase - pa.currentPhase) * RAD;
+        while (diff < 0) diff += 2.0 * PI;
+        while (diff >= 2.0 * PI) diff -= 2.0 * PI;
+
+        pa.phaseDiff = diff * DEG;
+        pa.timeToWindow = diff / synodicRate;
+    } else {
+        pa.phaseDiff = 0;
+        pa.timeToWindow = -1;  // Same orbital period, window always exists
+    }
+
+    pa.valid = true;
+    return pa;
+}
+
+// Calculate plane change requirements
+static PlaneChangeData CalcPlaneChange(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef) {
+    PlaneChangeData pc = {0, 0, 0, false};
+
+    if (!v || !hTarget || !hRef) return pc;
+
+    // Get vessel orbital elements
+    ELEMENTS el_v;
+    ORBITPARAM prm_v;
+    if (!v->GetElements(hRef, el_v, &prm_v, 0, FRAME_ECL)) return pc;
+
+    // Get vessel position and velocity to compute orbital plane normal
+    VECTOR3 vesselPos, vesselVel, refPos, refVel;
+    v->GetGlobalPos(vesselPos);
+    v->GetGlobalVel(vesselVel);
+    oapiGetGlobalPos(hRef, &refPos);
+    oapiGetGlobalVel(hRef, &refVel);
+
+    VECTOR3 relPos_v = vesselPos - refPos;
+    VECTOR3 relVel_v = vesselVel - refVel;
+
+    // Vessel orbital plane normal: h = r x v
+    VECTOR3 h_v = crossp(relPos_v, relVel_v);
+    double h_v_mag = length(h_v);
+    if (h_v_mag < 1e-10) return pc;
+    h_v = h_v / h_v_mag;  // Normalize
+
+    // Get target orbital plane normal
+    VECTOR3 targetPos, targetVel;
+    oapiGetGlobalPos(hTarget, &targetPos);
+    oapiGetGlobalVel(hTarget, &targetVel);
+
+    VECTOR3 relPos_t = targetPos - refPos;
+    VECTOR3 relVel_t = targetVel - refVel;
+
+    VECTOR3 h_t = crossp(relPos_t, relVel_t);
+    double h_t_mag = length(h_t);
+    if (h_t_mag < 1e-10) return pc;
+    h_t = h_t / h_t_mag;  // Normalize
+
+    // Relative inclination = angle between orbital plane normals
+    double cosInc = dotp(h_v, h_t);
+    if (cosInc > 1.0) cosInc = 1.0;
+    if (cosInc < -1.0) cosInc = -1.0;
+    double relInc = acos(cosInc);
+
+    pc.relInc = relInc * DEG;
+
+    // Calculate plane change delta-V (at current velocity)
+    // DV = 2 * v * sin(inc/2)
+    double v_mag = length(relVel_v);
+    pc.planeChangeDV = 2.0 * v_mag * sin(relInc / 2.0);
+
+    // Calculate angle to ascending node
+    // Line of nodes = h_v x h_t (intersection of orbital planes)
+    VECTOR3 nodeDir = crossp(h_v, h_t);
+    double nodeDir_mag = length(nodeDir);
+    if (nodeDir_mag > 1e-10) {
+        nodeDir = nodeDir / nodeDir_mag;
+
+        // Angle from current position to ascending node
+        double dotNode = dotp(relPos_v / length(relPos_v), nodeDir);
+        if (dotNode > 1.0) dotNode = 1.0;
+        if (dotNode < -1.0) dotNode = -1.0;
+        pc.nodeAngle = acos(dotNode) * DEG;
+    } else {
+        pc.nodeAngle = 0;  // Planes are coplanar
+    }
+
+    pc.valid = true;
+    return pc;
+}
+
+// Calculate rendezvous data for vessel targets
+static RendezvousData CalcRendezvous(VESSEL* v, OBJHANDLE hTarget) {
+    RendezvousData rd = {0, 0, 0, {0,0,0}, 0, false};
+
+    if (!v || !hTarget) return rd;
+
+    // Get relative position and velocity
+    VECTOR3 relPos, relVel;
+    v->GetRelativePos(hTarget, relPos);
+    v->GetRelativeVel(hTarget, relVel);
+
+    rd.distance = length(relPos);
+    rd.relVelMag = length(relVel);
+
+    // Closure rate (positive = approaching)
+    if (rd.distance > 1e-10) {
+        rd.closureRate = -dotp(relVel, relPos) / rd.distance;
+    }
+
+    // Time to closest approach at current rate
+    if (rd.closureRate > 1e-10) {
+        rd.timeToClose = rd.distance / rd.closureRate;
+    } else {
+        rd.timeToClose = -1;  // Not approaching
+    }
+
+    // Convert relative velocity to vessel local frame
+    MATRIX3 rot;
+    v->GetRotationMatrix(rot);
+    rd.relVel = tmul(rot, relVel);
+
+    rd.valid = true;
+    return rd;
 }
 
 // === PRINT FUNCTIONS ===
@@ -594,6 +874,15 @@ static void PrintHelp() {
     printf("  map        - Position, altitude, ground track\n");
     printf("  map bases  - List bases with distance/bearing\n");
     printf("  a, all     - All data\n");
+    printf("\n=== Transfer Planner ===\n");
+    printf("  tgt [name] - Show/set target (body or vessel)\n");
+    printf("  tgt list   - List bodies and vessels\n");
+    printf("  tgt clear  - Clear target\n");
+    printf("  tr         - Transfer summary\n");
+    printf("  tr hohmann - Hohmann transfer delta-v\n");
+    printf("  tr phase   - Phase angle to transfer window\n");
+    printf("  tr plane   - Plane change requirements\n");
+    printf("  tr ren     - Rendezvous data (vessel targets)\n");
     printf("\n=== Control Commands ===\n");
     printf("  na [mode]  - Autopilot (pro/retro/nml/anml/kill/level/halt/off)\n");
     printf("  th [n]     - Throttle 0-100 (or: th main/retro/hover n)\n");
@@ -601,6 +890,429 @@ static void PrintHelp() {
     printf("\n=== System ===\n");
     printf("  ?, help    - This help\n");
     printf("  q, quit    - Close console\n");
+}
+
+// Target selection and display
+static void PrintTarget(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    // No argument - show current target
+    if (!arg || arg[0] == '\0') {
+        if (!g_hTarget) {
+            printf("No target selected\n");
+            printf("Use: tgt <name> to set, tgt list to see options\n");
+            return;
+        }
+
+        char name[256];
+        oapiGetObjectName(g_hTarget, name, 256);
+        printf("Target: %s (%s)\n", name, g_bTargetIsVessel ? "vessel" : "celestial body");
+        return;
+    }
+
+    // "list" - show available targets
+    if (_stricmp(arg, "list") == 0) {
+        printf("=== Celestial Bodies ===\n");
+        int nBodies = oapiGetGbodyCount();
+        for (int i = 0; i < nBodies; i++) {
+            OBJHANDLE hBody = oapiGetGbodyByIndex(i);
+            if (hBody) {
+                char name[256];
+                oapiGetObjectName(hBody, name, 256);
+                printf("  %s\n", name);
+            }
+        }
+
+        printf("=== Vessels ===\n");
+        int nVessels = oapiGetVesselCount();
+        char focusName[256];
+        oapiGetObjectName(v->GetHandle(), focusName, 256);
+
+        for (int i = 0; i < nVessels; i++) {
+            OBJHANDLE hVessel = oapiGetVesselByIndex(i);
+            if (hVessel) {
+                char name[256];
+                oapiGetObjectName(hVessel, name, 256);
+                // Skip the focus vessel
+                if (_stricmp(name, focusName) != 0) {
+                    printf("  %s\n", name);
+                }
+            }
+        }
+        return;
+    }
+
+    // "clear" - clear target
+    if (_stricmp(arg, "clear") == 0) {
+        g_hTarget = NULL;
+        g_bTargetIsVessel = false;
+        printf("Target cleared\n");
+        return;
+    }
+
+    // Try to find the target by name
+    // Copy argument to non-const buffer (API requires char*)
+    char targetName[256];
+    strncpy(targetName, arg, 255);
+    targetName[255] = '\0';
+
+    // First try celestial body
+    OBJHANDLE hBody = oapiGetGbodyByName(targetName);
+    if (hBody) {
+        g_hTarget = hBody;
+        g_bTargetIsVessel = false;
+        printf("Target: %s (celestial body)\n", targetName);
+        return;
+    }
+
+    // Try vessel
+    OBJHANDLE hVessel = oapiGetVesselByName(targetName);
+    if (hVessel) {
+        // Don't allow targeting self
+        if (hVessel == v->GetHandle()) {
+            printf("Cannot target own vessel\n");
+            return;
+        }
+        g_hTarget = hVessel;
+        g_bTargetIsVessel = true;
+        printf("Target: %s (vessel)\n", targetName);
+        return;
+    }
+
+    printf("Target not found: %s\n", arg);
+    printf("Use 'tgt list' to see available targets\n");
+}
+
+// Print Hohmann transfer data
+static void PrintHohmann() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    // Get vessel orbital elements
+    ELEMENTS el;
+    ORBITPARAM prm;
+    if (!v->GetElements(hRef, el, &prm, 0, FRAME_ECL)) {
+        printf("Cannot get orbital elements\n");
+        return;
+    }
+
+    // Check for escape trajectory
+    if (el.e >= 1.0) {
+        printf("Vessel on escape trajectory (e=%.3f)\n", el.e);
+        printf("Hohmann transfer not applicable\n");
+        return;
+    }
+
+    // Get current radius and target radius
+    double gm = GetGM(hRef);
+    double r1 = el.a * (1.0 - el.e * el.e) / (1.0 + el.e * cos(prm.TrA));
+
+    // Get target radius relative to same reference
+    VECTOR3 targetPos, refPos;
+    oapiGetGlobalPos(g_hTarget, &targetPos);
+    oapiGetGlobalPos(hRef, &refPos);
+    double r2 = length(targetPos - refPos);
+
+    // Calculate Hohmann transfer
+    HohmannTransfer ht = CalcHohmann(r1, r2, gm);
+
+    if (!ht.valid) {
+        printf("Cannot calculate transfer\n");
+        return;
+    }
+
+    char timeBuf[64];
+    FormatTime(ht.transferTime, timeBuf, sizeof(timeBuf));
+
+    printf("=== Hohmann Transfer ===\n");
+    if (r2 > r1) {
+        printf("  Departure DV: %.1f m/s (prograde)\n", ht.departDV);
+        printf("  Arrival DV:   %.1f m/s (retrograde)\n", ht.arriveDV);
+    } else {
+        printf("  Departure DV: %.1f m/s (retrograde)\n", ht.departDV);
+        printf("  Arrival DV:   %.1f m/s (prograde)\n", ht.arriveDV);
+    }
+    printf("  Total DV:     %.1f m/s\n", ht.totalDV);
+    printf("  Transfer Time: %s\n", timeBuf);
+
+    // Warn about elliptical orbit
+    if (el.e > 0.05) {
+        printf("  Note: Current orbit is elliptical (e=%.3f)\n", el.e);
+        printf("        Values assume burn at current radius\n");
+    }
+}
+
+// Print phase angle data
+static void PrintPhase() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    PhaseAngleData pa = CalcPhaseAngle(v, g_hTarget, hRef);
+
+    if (!pa.valid) {
+        printf("Cannot calculate phase angle\n");
+        printf("(Vessel may be on escape trajectory)\n");
+        return;
+    }
+
+    printf("=== Phase Angle ===\n");
+    printf("  Current:  %.1f deg\n", pa.currentPhase);
+    printf("  Required: %.1f deg\n", pa.requiredPhase);
+    printf("  Difference: %.1f deg\n", pa.phaseDiff);
+
+    if (pa.timeToWindow > 0) {
+        char timeBuf[64];
+        FormatTime(pa.timeToWindow, timeBuf, sizeof(timeBuf));
+        printf("  Time to Window: %s\n", timeBuf);
+    } else if (pa.timeToWindow < 0) {
+        printf("  Time to Window: N/A (same period)\n");
+    }
+}
+
+// Print plane change data
+static void PrintPlane() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    PlaneChangeData pc = CalcPlaneChange(v, g_hTarget, hRef);
+
+    if (!pc.valid) {
+        printf("Cannot calculate plane change\n");
+        return;
+    }
+
+    printf("=== Plane Change ===\n");
+    printf("  Relative Inc: %.2f deg\n", pc.relInc);
+
+    if (pc.relInc < 0.1) {
+        printf("  Planes are coplanar - no correction needed\n");
+    } else {
+        printf("  Plane Change DV: %.1f m/s\n", pc.planeChangeDV);
+        printf("  Angle to Node: %.1f deg\n", pc.nodeAngle);
+    }
+}
+
+// Print rendezvous data (for vessel targets)
+static void PrintRendezvous() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        return;
+    }
+
+    if (!g_bTargetIsVessel) {
+        printf("Rendezvous data only available for vessel targets\n");
+        return;
+    }
+
+    RendezvousData rd = CalcRendezvous(v, g_hTarget);
+
+    if (!rd.valid) {
+        printf("Cannot calculate rendezvous data\n");
+        return;
+    }
+
+    char distBuf[64];
+    FormatDistance(rd.distance, distBuf, sizeof(distBuf));
+
+    printf("=== Rendezvous ===\n");
+    printf("  Distance: %s\n", distBuf);
+    printf("  Closure Rate: %.2f m/s", rd.closureRate);
+    if (rd.closureRate > 0)
+        printf(" (approaching)\n");
+    else if (rd.closureRate < 0)
+        printf(" (separating)\n");
+    else
+        printf("\n");
+
+    printf("  Relative Vel: %.2f m/s\n", rd.relVelMag);
+
+    if (rd.timeToClose > 0) {
+        char timeBuf[64];
+        FormatTime(rd.timeToClose, timeBuf, sizeof(timeBuf));
+        printf("  Time to Close: %s\n", timeBuf);
+    }
+
+    printf("  Local Frame Vel:\n");
+    printf("    Vx: %.2f m/s\n", rd.relVel.x);
+    printf("    Vy: %.2f m/s\n", rd.relVel.y);
+    printf("    Vz: %.2f m/s\n", rd.relVel.z);
+}
+
+// Transfer summary dispatcher
+static void PrintTransfer(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        printf("Use: tgt <name> to set a target first\n");
+        return;
+    }
+
+    // Get target name
+    char targetName[256];
+    oapiGetObjectName(g_hTarget, targetName, 256);
+
+    // Subcommand handling
+    if (arg && arg[0] != '\0') {
+        if (_stricmp(arg, "hohmann") == 0) {
+            PrintHohmann();
+            return;
+        } else if (_stricmp(arg, "phase") == 0) {
+            PrintPhase();
+            return;
+        } else if (_stricmp(arg, "plane") == 0) {
+            PrintPlane();
+            return;
+        } else if (_stricmp(arg, "ren") == 0 || _stricmp(arg, "rendezvous") == 0) {
+            PrintRendezvous();
+            return;
+        } else {
+            printf("Unknown transfer command: %s\n", arg);
+            printf("Options: hohmann, phase, plane, ren\n");
+            return;
+        }
+    }
+
+    // Default: show full transfer summary
+    printf("=== TRANSFER TO %s ===\n", targetName);
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    // Get vessel orbital elements
+    ELEMENTS el;
+    ORBITPARAM prm;
+    if (!v->GetElements(hRef, el, &prm, 0, FRAME_ECL)) {
+        printf("Cannot get orbital elements\n");
+        return;
+    }
+
+    // Check for escape trajectory
+    if (el.e >= 1.0) {
+        printf("Vessel on escape trajectory (e=%.3f)\n", el.e);
+        printf("Transfer calculations not applicable\n");
+        return;
+    }
+
+    // Get radii
+    double gm = GetGM(hRef);
+    double r1 = el.a * (1.0 - el.e * el.e) / (1.0 + el.e * cos(prm.TrA));
+
+    VECTOR3 targetPos, refPos;
+    oapiGetGlobalPos(g_hTarget, &targetPos);
+    oapiGetGlobalPos(hRef, &refPos);
+    double r2 = length(targetPos - refPos);
+
+    // Hohmann transfer
+    HohmannTransfer ht = CalcHohmann(r1, r2, gm);
+    if (ht.valid) {
+        char timeBuf[64];
+        FormatTime(ht.transferTime, timeBuf, sizeof(timeBuf));
+
+        printf("\nHohmann Transfer:\n");
+        if (r2 > r1) {
+            printf("  Departure DV: %.1f m/s (prograde)\n", ht.departDV);
+            printf("  Arrival DV:   %.1f m/s (retrograde)\n", ht.arriveDV);
+        } else {
+            printf("  Departure DV: %.1f m/s (retrograde)\n", ht.departDV);
+            printf("  Arrival DV:   %.1f m/s (prograde)\n", ht.arriveDV);
+        }
+        printf("  Total DV:     %.1f m/s\n", ht.totalDV);
+        printf("  Transfer Time: %s\n", timeBuf);
+    }
+
+    // Phase angle
+    PhaseAngleData pa = CalcPhaseAngle(v, g_hTarget, hRef);
+    if (pa.valid) {
+        printf("\nPhase Angle:\n");
+        printf("  Current:  %.1f deg\n", pa.currentPhase);
+        printf("  Required: %.1f deg\n", pa.requiredPhase);
+        if (pa.timeToWindow > 0) {
+            char timeBuf[64];
+            FormatTime(pa.timeToWindow, timeBuf, sizeof(timeBuf));
+            printf("  Time to Window: %s\n", timeBuf);
+        }
+    }
+
+    // Plane change
+    PlaneChangeData pc = CalcPlaneChange(v, g_hTarget, hRef);
+    if (pc.valid && pc.relInc > 0.1) {
+        printf("\nPlane Change:\n");
+        printf("  Relative Inc: %.2f deg\n", pc.relInc);
+        printf("  Plane Change DV: %.1f m/s\n", pc.planeChangeDV);
+    }
+
+    // Rendezvous (vessel targets only)
+    if (g_bTargetIsVessel) {
+        RendezvousData rd = CalcRendezvous(v, g_hTarget);
+        if (rd.valid) {
+            char distBuf[64];
+            FormatDistance(rd.distance, distBuf, sizeof(distBuf));
+
+            printf("\nRendezvous:\n");
+            printf("  Distance: %s\n", distBuf);
+            printf("  Closure Rate: %.2f m/s\n", rd.closureRate);
+        }
+    }
 }
 
 // Console thread
@@ -653,6 +1365,10 @@ static unsigned __stdcall ConsoleThread(void* param) {
             PrintWarp(arg);
         } else if (_stricmp(cmd, "map") == 0) {
             PrintMap(arg);
+        } else if (_stricmp(cmd, "tgt") == 0 || _stricmp(cmd, "target") == 0) {
+            PrintTarget(arg);
+        } else if (_stricmp(cmd, "tr") == 0 || _stricmp(cmd, "transfer") == 0) {
+            PrintTransfer(arg);
         } else if (_stricmp(cmd, "?") == 0 || _stricmp(cmd, "help") == 0) {
             PrintHelp();
         } else if (_stricmp(cmd, "q") == 0 || _stricmp(cmd, "quit") == 0) {
