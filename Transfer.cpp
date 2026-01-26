@@ -584,6 +584,10 @@ void PrintHelp() {
     printf("  na [mode]  - Autopilot (pro/retro/nml/anml/kill/level/halt/off)\n");
     printf("  th [n]     - Throttle 0-100 (or: th main/retro/hover n)\n");
     printf("  warp [n]   - Time warp (0.1=slow, 1=normal, 100000=max)\n");
+    printf("\n=== Launch Autopilot ===\n");
+    printf("  la, launch <alt>  - Launch to orbit (altitude in km)\n");
+    printf("  la abort   - Abort launch autopilot\n");
+    printf("  la         - Show launch status\n");
     printf("\n=== System ===\n");
     printf("  ?, help    - This help\n");
     printf("  q, quit    - Close console\n");

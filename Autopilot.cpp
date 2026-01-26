@@ -1,0 +1,61 @@
+// Autopilot.cpp - Launch command handler implementation
+
+#include "Autopilot.h"
+#include "AutopilotController.h"
+#include <stdio.h>
+#include <string.h>
+
+void PrintLaunch(const char* arg) {
+    // No argument - show status
+    if (!arg || arg[0] == '\0') {
+        char statusBuf[256];
+        g_autopilotController.GetStatusText(statusBuf, sizeof(statusBuf));
+        printf("%s\n", statusBuf);
+
+        if (!g_autopilotController.IsActive()) {
+            printf("\nUsage:\n");
+            printf("  launch <altitude>  - Launch to orbit (km)\n");
+            printf("  launch abort       - Abort autopilot\n");
+            printf("\nExamples:\n");
+            printf("  launch 200   - Launch to 200 km circular orbit\n");
+            printf("  launch 300   - Launch to 300 km circular orbit\n");
+        }
+        return;
+    }
+
+    // Check for abort command
+    if (_stricmp(arg, "abort") == 0 || _stricmp(arg, "off") == 0) {
+        g_autopilotController.Abort();
+        return;
+    }
+
+    // Check for status command
+    if (_stricmp(arg, "status") == 0 || _stricmp(arg, "s") == 0) {
+        char statusBuf[256];
+        g_autopilotController.GetStatusText(statusBuf, sizeof(statusBuf));
+        printf("%s\n", statusBuf);
+        return;
+    }
+
+    // Parse altitude (supports formats: "200", "200k", "200km")
+    double altitude = 0;
+    char suffix[16] = "";
+
+    int parsed = sscanf(arg, "%lf%15s", &altitude, suffix);
+    if (parsed < 1 || altitude <= 0) {
+        printf("Invalid altitude. Usage: launch <altitude_km>\n");
+        printf("Examples: launch 200, launch 300\n");
+        return;
+    }
+
+    // Handle suffix (k or km means kilometers, which is default anyway)
+    // If user types "200000" (meters), warn them
+    if (altitude > 1000 && suffix[0] == '\0') {
+        printf("Note: Altitude should be in km. Did you mean %.0f km?\n", altitude / 1000);
+        printf("If you want %.0f km, type: launch %.0f\n", altitude, altitude);
+        return;
+    }
+
+    // Start launch
+    g_autopilotController.StartLaunch(altitude);
+}

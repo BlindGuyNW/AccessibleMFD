@@ -83,6 +83,9 @@ set(Sources
     Queries.cpp
     Controls.cpp
     Transfer.cpp
+    AutopilotModule.cpp
+    AutopilotController.cpp
+    Autopilot.cpp
 )
 
 set(Headers
@@ -93,6 +96,9 @@ set(Headers
     Queries.h
     Controls.h
     Transfer.h
+    AutopilotModule.h
+    AutopilotController.h
+    Autopilot.h
 )
 
 # Collect SDK headers for IDE convenience

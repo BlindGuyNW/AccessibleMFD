@@ -4,6 +4,7 @@
 #include "Queries.h"
 #include "Controls.h"
 #include "Transfer.h"
+#include "Autopilot.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -54,6 +55,9 @@ static Command s_commands[] = {
     {"target",   "tgt",  true,  NULL, PrintTarget},
     {"transfer", "tr",   true,  NULL, PrintTransfer},
     {"align",    "al",   true,  NULL, PrintAlign},
+
+    // Autopilot (with args)
+    {"launch",   "la",   true,  NULL, PrintLaunch},
 
     // Help
     {"help",     "?",    false, PrintHelp, NULL},
