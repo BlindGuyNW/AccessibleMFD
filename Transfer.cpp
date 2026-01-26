@@ -453,6 +453,105 @@ void PrintTransfer(const char* arg) {
     }
 }
 
+void PrintAlign(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        printf("Use: tgt <name> to set a target first\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    // Check if targeting the reference body itself
+    if (g_hTarget == hRef) {
+        printf("Cannot align to current reference body\n");
+        return;
+    }
+
+    // Parse mode from argument
+    AlignMode mode = ALIGN_AUTO;
+    if (arg && arg[0] != '\0') {
+        if (_stricmp(arg, "orbit") == 0) {
+            mode = ALIGN_ORBIT;
+        } else if (_stricmp(arg, "ballistic") == 0) {
+            mode = ALIGN_BALLISTIC;
+        } else if (_stricmp(arg, "surface") == 0) {
+            mode = ALIGN_SURFACE;
+        } else if (_stricmp(arg, "auto") != 0) {
+            printf("Unknown align mode: %s\n", arg);
+            printf("Options: auto, orbit, ballistic, surface\n");
+            return;
+        }
+    }
+
+    // Get target and reference names
+    char targetName[256], refName[256];
+    oapiGetObjectName(g_hTarget, targetName, 256);
+    oapiGetObjectName(hRef, refName, 256);
+
+    // Calculate alignment data
+    PlaneAlignData pa = CalcPlaneAlign(v, g_hTarget, hRef, mode);
+
+    if (!pa.valid) {
+        printf("Cannot calculate plane alignment\n");
+        printf("(Vessel may be on escape trajectory)\n");
+        return;
+    }
+
+    // Determine mode name for display
+    const char* modeName = "Orbit";
+    if (mode == ALIGN_BALLISTIC) modeName = "Ballistic";
+    else if (mode == ALIGN_SURFACE) modeName = "Surface";
+
+    printf("=== PLANE ALIGNMENT ===\n");
+    printf("Target: %s\n", targetName);
+    printf("Reference: %s\n", refName);
+    printf("Mode: %s\n", modeName);
+
+    printf("\nVessel:  Inc %.2f deg  LAN %.2f deg\n", pa.vesselInc, pa.vesselLAN);
+    printf("Target:  Inc %.2f deg  LAN %.2f deg\n", pa.targetInc, pa.targetLAN);
+
+    printf("\nRelative Inc: %.2f deg\n", pa.relInc);
+
+    if (pa.relInc < 0.01) {
+        printf("\nPlanes are aligned - no correction needed\n");
+        return;
+    }
+
+    // Format time to nodes
+    char timeAN[64], timeDN[64];
+    FormatTime(pa.timeToAN, timeAN, sizeof(timeAN));
+    FormatTime(pa.timeToDN, timeDN, sizeof(timeDN));
+
+    printf("\nAscending Node:  %.1f deg  TtAN %s\n", pa.angleToAN, timeAN);
+    printf("Descending Node: %.1f deg  TtDN %s\n", pa.angleToDN, timeDN);
+
+    // Burn recommendation
+    printf("\nBurn at %s (%s)\n",
+        pa.burnAtAN ? "AN" : "DN",
+        pa.burnAtAN ? "NML+" : "NML-");
+
+    printf("  dV: %.1f m/s\n", pa.burnDV);
+
+    if (pa.burnTime > 0) {
+        char burnTimeBuf[64], ttbBuf[64];
+        FormatTime(pa.burnTime, burnTimeBuf, sizeof(burnTimeBuf));
+        FormatTime(pa.timeToBurn, ttbBuf, sizeof(ttbBuf));
+        printf("  Burn: %s\n", burnTimeBuf);
+        printf("  TtB: %s\n", ttbBuf);
+    }
+}
+
 void PrintHelp() {
     printf("=== Data Commands ===\n");
     printf("  v, vessel  - Vessel info\n");
@@ -477,6 +576,10 @@ void PrintHelp() {
     printf("  tr phase   - Phase angle to transfer window\n");
     printf("  tr plane   - Plane change requirements\n");
     printf("  tr ren     - Rendezvous data (vessel targets)\n");
+    printf("  al, align  - Plane alignment (Inc, LAN, nodes, burn)\n");
+    printf("    al orbit   - Orbit mode (osculating elements)\n");
+    printf("    al ballistic - Ballistic mode (suborbital)\n");
+    printf("    al surface - Surface mode (launch planning)\n");
     printf("\n=== Control Commands ===\n");
     printf("  na [mode]  - Autopilot (pro/retro/nml/anml/kill/level/halt/off)\n");
     printf("  th [n]     - Throttle 0-100 (or: th main/retro/hover n)\n");

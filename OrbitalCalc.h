@@ -44,6 +44,43 @@ struct RendezvousData {
     bool valid;
 };
 
+// Plane alignment data
+struct PlaneAlignData {
+    // Vessel orbital plane (ecliptic frame)
+    double vesselInc;      // Inclination [deg]
+    double vesselLAN;      // Longitude of ascending node [deg]
+
+    // Target orbital plane (ecliptic frame)
+    double targetInc;      // Inclination [deg]
+    double targetLAN;      // Longitude of ascending node [deg]
+
+    // Relative plane data
+    double relInc;         // Relative inclination [deg]
+
+    // Node positions (angles from current position)
+    double angleToAN;      // Angle to ascending node [deg]
+    double angleToDN;      // Angle to descending node [deg]
+
+    // Time to nodes
+    double timeToAN;       // Time to ascending node [s]
+    double timeToDN;       // Time to descending node [s]
+
+    // Burn parameters
+    bool burnAtAN;         // true = NML+ at AN, false = NML- at DN
+    double burnDV;         // Required delta-V [m/s]
+    double burnTime;       // Estimated burn duration [s]
+    double timeToBurn;     // Time to start burn [s]
+
+    bool valid;
+};
+
+enum AlignMode {
+    ALIGN_AUTO,
+    ALIGN_ORBIT,
+    ALIGN_BALLISTIC,
+    ALIGN_SURFACE
+};
+
 // Get GM (gravitational parameter) for a body
 double GetGM(OBJHANDLE hBody);
 
@@ -60,5 +97,8 @@ PlaneChangeData CalcPlaneChange(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef);
 
 // Calculate rendezvous data for vessel targets
 RendezvousData CalcRendezvous(VESSEL* v, OBJHANDLE hTarget);
+
+// Calculate plane alignment data for orbital plane matching
+PlaneAlignData CalcPlaneAlign(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef, AlignMode mode);
 
 #endif // ORBITALCALC_H

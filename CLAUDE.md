@@ -43,51 +43,6 @@ Key locations for reference:
 | `Controls.cpp/.h` | Control commands (autopilot, throttle, warp) |
 | `Transfer.cpp/.h` | Transfer planner and target management |
 
-## Commands
-
-### Data Queries
-| Command | Description |
-|---------|-------------|
-| `v`, `vessel` | Vessel name, class, reference body |
-| `o`, `orbit` | Altitude, apoapsis, periapsis, inclination, eccentricity, period |
-| `f`, `flight` | Velocity, heading, pitch, bank |
-| `sf`, `surface` | Altitude, speed, attitude, atmosphere, aerodynamics |
-| `sf alt` | Detailed altitude, speed, and attitude |
-| `sf atm` | Atmospheric conditions (Mach, temperature, pressure) |
-| `sf forces` | Aerodynamic forces (lift, drag, L/D ratio) |
-| `m`, `mfd` | Left/right MFD modes |
-| `d`, `dock` | NAV target, distance, closure rate, relative velocities |
-| `fuel` | Fuel mass, capacity, percentage |
-| `map` | Position, altitude, ground track |
-| `map bases` | List nearby bases with distance/bearing |
-| `a`, `all` | All data queries combined |
-
-### Transfer Planner
-| Command | Description |
-|---------|-------------|
-| `tgt` | Show current target |
-| `tgt <name>` | Set target (body or vessel) |
-| `tgt list` | List celestial bodies and vessels |
-| `tgt clear` | Clear target |
-| `tr` | Transfer summary (Hohmann, phase, plane change) |
-| `tr hohmann` | Hohmann transfer delta-v and time |
-| `tr phase` | Phase angle to transfer window |
-| `tr plane` | Plane change requirements |
-| `tr ren` | Rendezvous data (vessel targets) |
-
-### Control
-| Command | Description |
-|---------|-------------|
-| `na [mode]` | Autopilot: pro/retro/nml/anml/kill/level/halt/off |
-| `th [n]` | Throttle 0-100, or `th main/retro/hover n` |
-| `warp [n]` | Time warp (0.1 = slow motion, 1 = normal, max 100000) |
-
-### System
-| Command | Description |
-|---------|-------------|
-| `?`, `help` | Show help |
-| `q`, `quit` | Close console |
-
 ## Key APIs
 
 - `oapiGetFocusInterface()` - get current vessel
@@ -100,8 +55,3 @@ Key locations for reference:
 - `VESSEL::GetAtmPressure/GetAtmTemperature/GetAtmDensity()` - atmospheric data
 - `VESSEL::GetMachNumber/GetDynPressure()` - aerodynamic state
 - `VESSEL::GetLift/GetDrag/GetAOA/GetSlipAngle()` - aerodynamic forces
-
-## Future Ideas
-
-- RCS control (`rcs rot/lin/off`)
-- HUD/MFD mode switching

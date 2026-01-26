@@ -13,6 +13,9 @@ void PrintPlane();
 void PrintRendezvous();
 void PrintTransfer(const char* arg);
 
+// Plane alignment display
+void PrintAlign(const char* arg);
+
 // Help display
 void PrintHelp();
 

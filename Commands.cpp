@@ -53,6 +53,7 @@ static Command s_commands[] = {
     // Transfer planner (with args)
     {"target",   "tgt",  true,  NULL, PrintTarget},
     {"transfer", "tr",   true,  NULL, PrintTransfer},
+    {"align",    "al",   true,  NULL, PrintAlign},
 
     // Help
     {"help",     "?",    false, PrintHelp, NULL},
