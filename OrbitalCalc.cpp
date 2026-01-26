@@ -87,11 +87,15 @@ PhaseAngleData CalcPhaseAngle(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef) {
     double r1 = el_v.a * (1.0 - el_v.e * el_v.e) / (1.0 + el_v.e * cos(prm_v.TrA));  // Current radius
     double r2 = length(relTargetPos);  // Target radius (assuming circular)
 
+    // Guard against zero/near-zero target radius (e.g., targeting reference body)
+    if (r2 < 1000.0) return pa;  // Less than 1km is invalid
+
     double a_t = (r1 + r2) / 2.0;
     double transferTime = PI * sqrt(a_t * a_t * a_t / gm);
 
     // Target angular velocity (assuming circular orbit)
     double targetPeriod = 2.0 * PI * sqrt(r2 * r2 * r2 / gm);
+    if (targetPeriod < 1.0) return pa;  // Guard against division by zero
     double targetAngVel = 2.0 * PI / targetPeriod;  // rad/s
 
     // Required phase = 180 degrees minus angle target travels during transfer

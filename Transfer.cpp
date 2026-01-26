@@ -123,6 +123,12 @@ void PrintHohmann() {
         return;
     }
 
+    // Check if targeting the reference body itself
+    if (g_hTarget == hRef) {
+        printf("Cannot calculate transfer to current reference body\n");
+        return;
+    }
+
     // Get vessel orbital elements
     ELEMENTS el;
     ORBITPARAM prm;
@@ -195,6 +201,12 @@ void PrintPhase() {
         return;
     }
 
+    // Check if targeting the reference body itself
+    if (g_hTarget == hRef) {
+        printf("Cannot calculate phase angle to current reference body\n");
+        return;
+    }
+
     PhaseAngleData pa = CalcPhaseAngle(v, g_hTarget, hRef);
 
     if (!pa.valid) {
@@ -232,6 +244,12 @@ void PrintPlane() {
     OBJHANDLE hRef = v->GetGravityRef();
     if (!hRef) {
         printf("No reference body\n");
+        return;
+    }
+
+    // Check if targeting the reference body itself
+    if (g_hTarget == hRef) {
+        printf("Cannot calculate plane change to current reference body\n");
         return;
     }
 
@@ -348,6 +366,13 @@ void PrintTransfer(const char* arg) {
     OBJHANDLE hRef = v->GetGravityRef();
     if (!hRef) {
         printf("No reference body\n");
+        return;
+    }
+
+    // Check if targeting the reference body itself
+    if (g_hTarget == hRef) {
+        printf("Cannot transfer to current reference body\n");
+        printf("You are already orbiting %s\n", targetName);
         return;
     }
 
