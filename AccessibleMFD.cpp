@@ -39,6 +39,7 @@ static void PrintNav(const char* arg);
 static void PrintThrottle(const char* arg);
 static void PrintFuel();
 static void PrintWarp(const char* arg);
+static void PrintMap(const char* arg);
 static unsigned __stdcall ConsoleThread(void* param);
 
 // Helper to get navmode name
@@ -116,6 +117,36 @@ static void FormatTime(double seconds, char* buf, int len) {
     } else {
         _snprintf(buf, len, "%.1fs", seconds);
     }
+    buf[len-1] = '\0';
+}
+
+// Map helpers - great circle calculations
+static double CalcDistance(double lat1, double lon1, double lat2, double lon2, double radius) {
+    // Haversine formula
+    double dLat = lat2 - lat1;
+    double dLon = lon2 - lon1;
+    double a = sin(dLat / 2) * sin(dLat / 2) +
+               cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2);
+    double c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    return radius * c;
+}
+
+static double CalcBearing(double lat1, double lon1, double lat2, double lon2) {
+    // Initial bearing from point 1 to point 2
+    double dLon = lon2 - lon1;
+    double y = sin(dLon) * cos(lat2);
+    double x = cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dLon);
+    double bearing = atan2(y, x);
+    return posangle(bearing) * DEG;  // Convert to degrees 0-360
+}
+
+static void FormatLatLon(double lat, double lon, char* buf, int len) {
+    // lat/lon are in radians, convert to degrees
+    double latDeg = fabs(lat * DEG);
+    double lonDeg = fabs(lon * DEG);
+    char latDir = (lat >= 0) ? 'N' : 'S';
+    char lonDir = (lon >= 0) ? 'E' : 'W';
+    _snprintf(buf, len, "%.2f%c%c, %.2f%c%c", latDeg, 0xB0, latDir, lonDeg, 0xB0, lonDir);
     buf[len-1] = '\0';
 }
 
@@ -475,6 +506,83 @@ static void PrintWarp(const char* arg) {
         printf("Time Warp: %.0fx\n", warp);
 }
 
+// Map position and bases
+static void PrintMap(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetSurfaceRef();
+    if (!hRef) {
+        printf("No surface reference\n");
+        return;
+    }
+
+    char refName[256];
+    oapiGetObjectName(hRef, refName, 256);
+
+    double lng, lat, rad;
+    v->GetEquPos(lng, lat, rad);
+
+    double refRadius = oapiGetSize(hRef);
+
+    // Check for "bases" subcommand
+    if (arg && _stricmp(arg, "bases") == 0) {
+        DWORD baseCount = oapiGetBaseCount(hRef);
+        if (baseCount == 0) {
+            printf("No bases on %s\n", refName);
+            return;
+        }
+
+        printf("Bases on %s:\n", refName);
+
+        for (DWORD i = 0; i < baseCount; i++) {
+            OBJHANDLE hBase = oapiGetBaseByIndex(hRef, i);
+            if (!hBase) continue;
+
+            char baseName[256];
+            oapiGetObjectName(hBase, baseName, 256);
+
+            double baseLng, baseLat;
+            oapiGetBaseEquPos(hBase, &baseLng, &baseLat);
+
+            double dist = CalcDistance(lat, lng, baseLat, baseLng, refRadius);
+            double bearing = CalcBearing(lat, lng, baseLat, baseLng);
+
+            char distBuf[64];
+            FormatDistance(dist, distBuf, sizeof(distBuf));
+
+            printf("  %s: %s, bearing %.0f%c\n", baseName, distBuf, bearing, 0xB0);
+        }
+        return;
+    }
+
+    // Default: show current position
+    printf("Ref: %s\n", refName);
+
+    char posBuf[64];
+    FormatLatLon(lat, lng, posBuf, sizeof(posBuf));
+    printf("Position: %s\n", posBuf);
+
+    double alt = v->GetAltitude();
+    char altBuf[64];
+    FormatDistance(alt, altBuf, sizeof(altBuf));
+    printf("Altitude: %s\n", altBuf);
+
+    // Ground track - heading and speed
+    VECTOR3 groundVel;
+    v->GetGroundspeedVector(FRAME_HORIZON, groundVel);
+    double groundSpeed = sqrt(groundVel.x * groundVel.x + groundVel.z * groundVel.z);
+    double trackHeading = posangle(atan2(groundVel.x, groundVel.z)) * DEG;
+
+    if (groundSpeed >= 1000)
+        printf("Ground Track: %.0f%c at %.2f km/s\n", trackHeading, 0xB0, groundSpeed / 1000);
+    else
+        printf("Ground Track: %.0f%c at %.1f m/s\n", trackHeading, 0xB0, groundSpeed);
+}
+
 static void PrintHelp() {
     printf("=== Data Commands ===\n");
     printf("  v, vessel  - Vessel info\n");
@@ -483,6 +591,8 @@ static void PrintHelp() {
     printf("  m, mfd     - MFD modes\n");
     printf("  d, dock    - Docking data\n");
     printf("  fuel       - Fuel status\n");
+    printf("  map        - Position, altitude, ground track\n");
+    printf("  map bases  - List bases with distance/bearing\n");
     printf("  a, all     - All data\n");
     printf("\n=== Control Commands ===\n");
     printf("  na [mode]  - Autopilot (pro/retro/nml/anml/kill/level/halt/off)\n");
@@ -541,6 +651,8 @@ static unsigned __stdcall ConsoleThread(void* param) {
             PrintFuel();
         } else if (_stricmp(cmd, "warp") == 0 || _stricmp(cmd, "w") == 0) {
             PrintWarp(arg);
+        } else if (_stricmp(cmd, "map") == 0) {
+            PrintMap(arg);
         } else if (_stricmp(cmd, "?") == 0 || _stricmp(cmd, "help") == 0) {
             PrintHelp();
         } else if (_stricmp(cmd, "q") == 0 || _stricmp(cmd, "quit") == 0) {
