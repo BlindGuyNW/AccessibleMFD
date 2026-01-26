@@ -1,0 +1,16 @@
+// Copyright (c) Martin Schweiger
+// Licensed under the MIT License
+
+#include "resource.h"
+#include <windows.h>
+
+/////////////////////////////////////////////////////////////////////////////
+// Dialog
+
+IDD_DATAWINDOW DIALOGEX 0, 0, 280, 240
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
+CAPTION "Orbiter - Accessible Flight Data"
+FONT 9, "Segoe UI", 400, 0, 0x1
+BEGIN
+    // ListView will be created dynamically to fill the entire client area
+END

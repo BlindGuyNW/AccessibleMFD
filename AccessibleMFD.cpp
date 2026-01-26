@@ -1,0 +1,619 @@
+// Copyright (c) Martin Schweiger
+// Licensed under the MIT License
+
+// ==============================================================
+//                 ORBITER MODULE: AccessibleMFD
+//                    Part of the ORBITER SDK
+//
+// AccessibleMFD.cpp
+//
+// Console-based accessible flight data display.
+// Type commands to query flight data on demand.
+// Access via Ctrl+F4 "Custom Functions" menu in Orbiter.
+// ==============================================================
+
+#define STRICT
+#define ORBITER_MODULE
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+#include <process.h>
+#include "orbitersdk.h"
+
+// Console state
+static HANDLE g_hConsole = NULL;
+static HANDLE g_hThread = NULL;
+static volatile bool g_bRunning = false;
+static HINSTANCE g_hInst = NULL;
+static DWORD g_dwCmd = 0;
+
+// Forward declarations
+static void PrintVessel();
+static void PrintOrbit();
+static void PrintFlight();
+static void PrintMFD();
+static void PrintDock();
+static void PrintAll();
+static void PrintHelp();
+static void PrintNav(const char* arg);
+static void PrintThrottle(const char* arg);
+static void PrintFuel();
+static void PrintWarp(const char* arg);
+static unsigned __stdcall ConsoleThread(void* param);
+
+// Helper to get navmode name
+static const char* GetNavmodeName(int mode) {
+    switch (mode) {
+        case NAVMODE_KILLROT:    return "Kill Rotation";
+        case NAVMODE_HLEVEL:     return "Hold Level";
+        case NAVMODE_PROGRADE:   return "Prograde";
+        case NAVMODE_RETROGRADE: return "Retrograde";
+        case NAVMODE_NORMAL:     return "Normal";
+        case NAVMODE_ANTINORMAL: return "Anti-Normal";
+        case NAVMODE_HOLDALT:    return "Hold Altitude";
+        default:                 return "Unknown";
+    }
+}
+
+// Helper to get engine type name
+static const char* GetEngineName(ENGINETYPE eng) {
+    switch (eng) {
+        case ENGINE_MAIN:  return "Main";
+        case ENGINE_RETRO: return "Retro";
+        case ENGINE_HOVER: return "Hover";
+        default:           return "Unknown";
+    }
+}
+
+// Helper to get MFD mode name
+static const char* GetMFDModeName(int mode) {
+    switch (mode) {
+        case MFD_NONE:        return "Off";
+        case MFD_ORBIT:       return "Orbit";
+        case MFD_SURFACE:     return "Surface";
+        case MFD_MAP:         return "Map";
+        case MFD_HSI:         return "HSI";
+        case MFD_LANDING:     return "Landing";
+        case MFD_DOCKING:     return "Docking";
+        case MFD_OPLANEALIGN: return "Align Planes";
+        case MFD_OSYNC:       return "Sync Orbit";
+        case MFD_TRANSFER:    return "Transfer";
+        case MFD_COMMS:       return "Comms";
+        default:              return (mode >= MFD_USERTYPE) ? "Custom" : "Unknown";
+    }
+}
+
+// Format helpers
+static void FormatDistance(double meters, char* buf, int len) {
+    if (meters >= 1e9)
+        _snprintf(buf, len, "%.2f Gm", meters / 1e9);
+    else if (meters >= 1e6)
+        _snprintf(buf, len, "%.2f Mm", meters / 1e6);
+    else if (meters >= 1e3)
+        _snprintf(buf, len, "%.2f km", meters / 1e3);
+    else
+        _snprintf(buf, len, "%.1f m", meters);
+    buf[len-1] = '\0';
+}
+
+static void FormatTime(double seconds, char* buf, int len) {
+    if (seconds < 0) {
+        _snprintf(buf, len, "N/A");
+    } else if (seconds >= 86400) {
+        int d = (int)(seconds / 86400);
+        int h = (int)((seconds - d * 86400) / 3600);
+        int m = (int)((seconds - d * 86400 - h * 3600) / 60);
+        _snprintf(buf, len, "%dd %dh %dm", d, h, m);
+    } else if (seconds >= 3600) {
+        int h = (int)(seconds / 3600);
+        int m = (int)((seconds - h * 3600) / 60);
+        int s = (int)(seconds - h * 3600 - m * 60);
+        _snprintf(buf, len, "%dh %dm %ds", h, m, s);
+    } else if (seconds >= 60) {
+        int m = (int)(seconds / 60);
+        int s = (int)(seconds - m * 60);
+        _snprintf(buf, len, "%dm %ds", m, s);
+    } else {
+        _snprintf(buf, len, "%.1fs", seconds);
+    }
+    buf[len-1] = '\0';
+}
+
+// === PRINT FUNCTIONS ===
+
+static void PrintVessel() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    printf("Vessel: %s\n", v->GetName());
+    printf("Class: %s\n", v->GetClassName());
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (hRef) {
+        char name[256];
+        oapiGetObjectName(hRef, name, 256);
+        printf("Ref: %s\n", name);
+    }
+}
+
+static void PrintOrbit() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    ELEMENTS el;
+    ORBITPARAM prm;
+    char buf[64];
+
+    if (!v->GetElements(hRef, el, &prm, 0, FRAME_ECL)) {
+        printf("Cannot get orbital elements\n");
+        return;
+    }
+
+    double refSize = oapiGetSize(hRef);
+
+    // Altitude
+    double alt = v->GetAltitude();
+    FormatDistance(alt, buf, sizeof(buf));
+    printf("Alt: %s\n", buf);
+
+    // Apoapsis
+    if (el.e < 1.0) {
+        FormatDistance(prm.ApD - refSize, buf, sizeof(buf));
+        printf("ApA: %s\n", buf);
+    } else {
+        printf("ApA: N/A (escape)\n");
+    }
+
+    // Periapsis
+    FormatDistance(prm.PeD - refSize, buf, sizeof(buf));
+    printf("PeA: %s\n", buf);
+
+    // Inclination
+    printf("Inc: %.2f deg\n", el.i * DEG);
+
+    // Eccentricity
+    printf("Ecc: %.6f\n", el.e);
+
+    // Period
+    if (el.e < 1.0) {
+        FormatTime(prm.T, buf, sizeof(buf));
+        printf("Period: %s\n", buf);
+    }
+
+    // Time to Ap/Pe
+    if (el.e < 1.0 && prm.ApT >= 0) {
+        FormatTime(prm.ApT, buf, sizeof(buf));
+        printf("T to Ap: %s\n", buf);
+    }
+    FormatTime(prm.PeT, buf, sizeof(buf));
+    printf("T to Pe: %s\n", buf);
+}
+
+static void PrintFlight() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    double speed = v->GetAirspeed();
+    if (speed >= 1000)
+        printf("Vel: %.2f km/s\n", speed / 1000);
+    else
+        printf("Vel: %.1f m/s\n", speed);
+
+    double heading = posangle(v->GetYaw()) * DEG;
+    printf("Hdg: %.1f deg\n", heading);
+
+    printf("Pitch: %.1f deg\n", v->GetPitch() * DEG);
+    printf("Bank: %.1f deg\n", v->GetBank() * DEG);
+}
+
+static void PrintMFD() {
+    printf("Left: %s\n", GetMFDModeName(oapiGetMFDMode(MFD_LEFT)));
+    printf("Right: %s\n", GetMFDModeName(oapiGetMFDMode(MFD_RIGHT)));
+}
+
+static void PrintDock() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    NAVHANDLE hNav = v->GetNavSource(0);
+    if (!hNav) {
+        printf("NAV: No target\n");
+        return;
+    }
+
+    char descr[128];
+    oapiGetNavDescr(hNav, descr, 128);
+    printf("NAV: %s\n", descr);
+
+    NAVDATA ndata;
+    oapiGetNavData(hNav, &ndata);
+
+    if (ndata.type != TRANSMITTER_IDS && ndata.type != TRANSMITTER_XPDR) {
+        printf("(Not a docking target)\n");
+        return;
+    }
+
+    OBJHANDLE hTarget = (ndata.type == TRANSMITTER_IDS)
+        ? ndata.ids.hVessel : ndata.xpdr.hVessel;
+
+    if (!hTarget) {
+        printf("Target vessel not found\n");
+        return;
+    }
+
+    VECTOR3 relPos, relVel;
+    v->GetRelativePos(hTarget, relPos);
+    v->GetRelativeVel(hTarget, relVel);
+
+    double dist = length(relPos);
+    char buf[64];
+    FormatDistance(dist, buf, sizeof(buf));
+    printf("Dist: %s\n", buf);
+
+    // Closure rate (positive = approaching)
+    double cvel = -dotp(relVel, relPos) / dist;
+    printf("CRate: %.2f m/s\n", cvel);
+
+    // Local frame velocities
+    MATRIX3 rot;
+    v->GetRotationMatrix(rot);
+    VECTOR3 lv = tmul(rot, relVel);
+
+    printf("Vx: %.2f m/s\n", lv.x);
+    printf("Vy: %.2f m/s\n", lv.y);
+    printf("Vz: %.2f m/s\n", lv.z);
+}
+
+static void PrintAll() {
+    printf("=== VESSEL ===\n");
+    PrintVessel();
+    printf("=== ORBIT ===\n");
+    PrintOrbit();
+    printf("=== FLIGHT ===\n");
+    PrintFlight();
+    printf("=== MFD ===\n");
+    PrintMFD();
+    printf("=== DOCK ===\n");
+    PrintDock();
+}
+
+// Navigation autopilot control
+static void PrintNav(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    // No argument - show status
+    if (!arg || arg[0] == '\0') {
+        printf("Autopilot Status:\n");
+        printf("  Kill Rot:    %s\n", v->GetNavmodeState(NAVMODE_KILLROT) ? "ON" : "off");
+        printf("  Hold Level:  %s\n", v->GetNavmodeState(NAVMODE_HLEVEL) ? "ON" : "off");
+        printf("  Prograde:    %s\n", v->GetNavmodeState(NAVMODE_PROGRADE) ? "ON" : "off");
+        printf("  Retrograde:  %s\n", v->GetNavmodeState(NAVMODE_RETROGRADE) ? "ON" : "off");
+        printf("  Normal:      %s\n", v->GetNavmodeState(NAVMODE_NORMAL) ? "ON" : "off");
+        printf("  Anti-Normal: %s\n", v->GetNavmodeState(NAVMODE_ANTINORMAL) ? "ON" : "off");
+        printf("  Hold Alt:    %s\n", v->GetNavmodeState(NAVMODE_HOLDALT) ? "ON" : "off");
+        return;
+    }
+
+    // Parse subcommand
+    if (_stricmp(arg, "off") == 0) {
+        v->DeactivateNavmode(NAVMODE_KILLROT);
+        v->DeactivateNavmode(NAVMODE_HLEVEL);
+        v->DeactivateNavmode(NAVMODE_PROGRADE);
+        v->DeactivateNavmode(NAVMODE_RETROGRADE);
+        v->DeactivateNavmode(NAVMODE_NORMAL);
+        v->DeactivateNavmode(NAVMODE_ANTINORMAL);
+        v->DeactivateNavmode(NAVMODE_HOLDALT);
+        printf("All autopilot modes disabled\n");
+    } else if (_stricmp(arg, "killrot") == 0 || _stricmp(arg, "kill") == 0) {
+        v->ToggleNavmode(NAVMODE_KILLROT);
+        printf("Kill Rotation: %s\n", v->GetNavmodeState(NAVMODE_KILLROT) ? "ON" : "off");
+    } else if (_stricmp(arg, "hlevel") == 0 || _stricmp(arg, "level") == 0) {
+        v->ToggleNavmode(NAVMODE_HLEVEL);
+        printf("Hold Level: %s\n", v->GetNavmodeState(NAVMODE_HLEVEL) ? "ON" : "off");
+    } else if (_stricmp(arg, "prograde") == 0 || _stricmp(arg, "pro") == 0) {
+        v->ToggleNavmode(NAVMODE_PROGRADE);
+        printf("Prograde: %s\n", v->GetNavmodeState(NAVMODE_PROGRADE) ? "ON" : "off");
+    } else if (_stricmp(arg, "retrograde") == 0 || _stricmp(arg, "retro") == 0) {
+        v->ToggleNavmode(NAVMODE_RETROGRADE);
+        printf("Retrograde: %s\n", v->GetNavmodeState(NAVMODE_RETROGRADE) ? "ON" : "off");
+    } else if (_stricmp(arg, "normal") == 0 || _stricmp(arg, "nml") == 0) {
+        v->ToggleNavmode(NAVMODE_NORMAL);
+        printf("Normal: %s\n", v->GetNavmodeState(NAVMODE_NORMAL) ? "ON" : "off");
+    } else if (_stricmp(arg, "antinormal") == 0 || _stricmp(arg, "anml") == 0) {
+        v->ToggleNavmode(NAVMODE_ANTINORMAL);
+        printf("Anti-Normal: %s\n", v->GetNavmodeState(NAVMODE_ANTINORMAL) ? "ON" : "off");
+    } else if (_stricmp(arg, "holdalt") == 0 || _stricmp(arg, "halt") == 0) {
+        v->ToggleNavmode(NAVMODE_HOLDALT);
+        printf("Hold Altitude: %s\n", v->GetNavmodeState(NAVMODE_HOLDALT) ? "ON" : "off");
+    } else {
+        printf("Unknown navmode: %s\n", arg);
+        printf("Options: killrot, hlevel, prograde, retrograde, normal, antinormal, holdalt, off\n");
+    }
+}
+
+// Throttle/engine control
+static void PrintThrottle(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    // No argument - show status
+    if (!arg || arg[0] == '\0') {
+        printf("Engine Status:\n");
+        printf("  Main:  %5.1f%%\n", v->GetEngineLevel(ENGINE_MAIN) * 100.0);
+        printf("  Retro: %5.1f%%\n", v->GetEngineLevel(ENGINE_RETRO) * 100.0);
+        printf("  Hover: %5.1f%%\n", v->GetEngineLevel(ENGINE_HOVER) * 100.0);
+        return;
+    }
+
+    // Parse: "th <level>" or "th <engine> <level>"
+    char eng[32] = "";
+    double level = -1;
+
+    // Try parsing as "th <level>" first
+    if (sscanf(arg, "%lf", &level) == 1 && strchr(arg, ' ') == NULL) {
+        // Single number - set main engine
+        if (level < 0 || level > 100) {
+            printf("Level must be 0-100\n");
+            return;
+        }
+        v->SetEngineLevel(ENGINE_MAIN, level / 100.0);
+        printf("Main: %.1f%%\n", level);
+        return;
+    }
+
+    // Try parsing as "th <engine> <level>"
+    if (sscanf(arg, "%31s %lf", eng, &level) == 2) {
+        if (level < 0 || level > 100) {
+            printf("Level must be 0-100\n");
+            return;
+        }
+
+        ENGINETYPE etype;
+        if (_stricmp(eng, "main") == 0) {
+            etype = ENGINE_MAIN;
+        } else if (_stricmp(eng, "retro") == 0) {
+            etype = ENGINE_RETRO;
+        } else if (_stricmp(eng, "hover") == 0) {
+            etype = ENGINE_HOVER;
+        } else {
+            printf("Unknown engine: %s\n", eng);
+            printf("Options: main, retro, hover\n");
+            return;
+        }
+
+        v->SetEngineLevel(etype, level / 100.0);
+        printf("%s: %.1f%%\n", GetEngineName(etype), level);
+        return;
+    }
+
+    printf("Usage: th [<level>] or th <engine> <level>\n");
+    printf("  th 50        - Set main engine to 50%%\n");
+    printf("  th main 100  - Set main engine to 100%%\n");
+    printf("  th hover 30  - Set hover engine to 30%%\n");
+}
+
+// Fuel status
+static void PrintFuel() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    double fuel = v->GetFuelMass();
+    double maxFuel = v->GetMaxFuelMass();
+
+    if (maxFuel <= 0) {
+        printf("No fuel tank\n");
+        return;
+    }
+
+    double pct = (fuel / maxFuel) * 100.0;
+
+    printf("Fuel: %.1f / %.1f kg (%.1f%%)\n", fuel, maxFuel, pct);
+
+    // Show total propellant if different from main tank
+    double total = v->GetTotalPropellantMass();
+    if (total > maxFuel * 1.01) {  // More than 1% difference suggests multiple tanks
+        printf("Total Propellant: %.1f kg\n", total);
+    }
+}
+
+// Time warp control
+static void PrintWarp(const char* arg) {
+    // No argument - show current warp
+    if (!arg || arg[0] == '\0') {
+        double warp = oapiGetTimeAcceleration();
+        if (warp < 1.0)
+            printf("Time Warp: %.2fx (slow motion)\n", warp);
+        else
+            printf("Time Warp: %.0fx\n", warp);
+        return;
+    }
+
+    // Parse warp factor (0.1 to 100000)
+    double warp = 0;
+    if (sscanf(arg, "%lf", &warp) != 1 || warp < 0.1 || warp > 100000) {
+        printf("Usage: warp [factor]\n");
+        printf("  warp        - Show current time warp\n");
+        printf("  warp 0.1    - Slow motion (minimum)\n");
+        printf("  warp 1      - Normal time\n");
+        printf("  warp 10     - 10x time acceleration\n");
+        printf("  warp 100000 - 100000x (maximum)\n");
+        return;
+    }
+
+    oapiSetTimeAcceleration(warp);
+    if (warp < 1.0)
+        printf("Time Warp: %.2fx (slow motion)\n", warp);
+    else
+        printf("Time Warp: %.0fx\n", warp);
+}
+
+static void PrintHelp() {
+    printf("=== Data Commands ===\n");
+    printf("  v, vessel  - Vessel info\n");
+    printf("  o, orbit   - Orbital data\n");
+    printf("  f, flight  - Flight data\n");
+    printf("  m, mfd     - MFD modes\n");
+    printf("  d, dock    - Docking data\n");
+    printf("  fuel       - Fuel status\n");
+    printf("  a, all     - All data\n");
+    printf("\n=== Control Commands ===\n");
+    printf("  na [mode]  - Autopilot (pro/retro/nml/anml/kill/level/halt/off)\n");
+    printf("  th [n]     - Throttle 0-100 (or: th main/retro/hover n)\n");
+    printf("  warp [n]   - Time warp (0.1=slow, 1=normal, 100000=max)\n");
+    printf("\n=== System ===\n");
+    printf("  ?, help    - This help\n");
+    printf("  q, quit    - Close console\n");
+}
+
+// Console thread
+static unsigned __stdcall ConsoleThread(void* param) {
+    char line[256];
+
+    printf("Accessible Flight Data Console\n");
+    printf("Type ? for help\n\n");
+
+    while (g_bRunning) {
+        printf("> ");
+        fflush(stdout);
+
+        if (!fgets(line, sizeof(line), stdin)) {
+            Sleep(100);
+            continue;
+        }
+
+        // Trim newline
+        char* p = line;
+        while (*p && *p != '\n' && *p != '\r') p++;
+        *p = '\0';
+
+        // Parse command - extract first word and remainder
+        char cmd[32] = "";
+        char* arg = NULL;
+        sscanf(line, "%31s", cmd);
+        arg = line + strlen(cmd);
+        while (*arg == ' ') arg++;  // Skip leading spaces in argument
+
+        if (_stricmp(cmd, "v") == 0 || _stricmp(cmd, "vessel") == 0) {
+            PrintVessel();
+        } else if (_stricmp(cmd, "o") == 0 || _stricmp(cmd, "orbit") == 0) {
+            PrintOrbit();
+        } else if (_stricmp(cmd, "f") == 0 || _stricmp(cmd, "flight") == 0) {
+            PrintFlight();
+        } else if (_stricmp(cmd, "m") == 0 || _stricmp(cmd, "mfd") == 0) {
+            PrintMFD();
+        } else if (_stricmp(cmd, "d") == 0 || _stricmp(cmd, "dock") == 0) {
+            PrintDock();
+        } else if (_stricmp(cmd, "a") == 0 || _stricmp(cmd, "all") == 0) {
+            PrintAll();
+        } else if (_stricmp(cmd, "na") == 0 || _stricmp(cmd, "nav") == 0) {
+            PrintNav(arg);
+        } else if (_stricmp(cmd, "th") == 0 || _stricmp(cmd, "throttle") == 0) {
+            PrintThrottle(arg);
+        } else if (_stricmp(cmd, "fuel") == 0) {
+            PrintFuel();
+        } else if (_stricmp(cmd, "warp") == 0 || _stricmp(cmd, "w") == 0) {
+            PrintWarp(arg);
+        } else if (_stricmp(cmd, "?") == 0 || _stricmp(cmd, "help") == 0) {
+            PrintHelp();
+        } else if (_stricmp(cmd, "q") == 0 || _stricmp(cmd, "quit") == 0) {
+            printf("Closing console...\n");
+            break;
+        } else if (cmd[0] != '\0') {
+            printf("Unknown command. Type ? for help.\n");
+        }
+    }
+
+    return 0;
+}
+
+// Open console
+static void OpenConsole() {
+    if (g_hConsole) {
+        // Already open, just bring to front
+        HWND hWnd = GetConsoleWindow();
+        if (hWnd) SetForegroundWindow(hWnd);
+        return;
+    }
+
+    if (!AllocConsole()) return;
+
+    g_hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    // Redirect stdout/stdin
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONIN$", "r", stdin);
+
+    SetConsoleTitle("Orbiter - Accessible Flight Data");
+
+    // Start console thread
+    g_bRunning = true;
+    g_hThread = (HANDLE)_beginthreadex(NULL, 0, ConsoleThread, NULL, 0, NULL);
+}
+
+static void CloseConsole() {
+    if (!g_hConsole) return;
+
+    g_bRunning = false;
+
+    if (g_hThread) {
+        // Give thread time to exit
+        WaitForSingleObject(g_hThread, 1000);
+        CloseHandle(g_hThread);
+        g_hThread = NULL;
+    }
+
+    FreeConsole();
+    g_hConsole = NULL;
+}
+
+// Custom command callback
+static void OpenAccessibleConsole(void* context) {
+    OpenConsole();
+}
+
+// === ORBITER MODULE INTERFACE ===
+
+DLLCLBK void InitModule(HINSTANCE hDLL) {
+    g_hInst = hDLL;
+
+    // Register custom command in Ctrl+F4 menu
+    g_dwCmd = oapiRegisterCustomCmd(
+        "Accessible Flight Data",
+        "Opens console window for accessible flight data queries",
+        OpenAccessibleConsole,
+        NULL
+    );
+}
+
+DLLCLBK void ExitModule(HINSTANCE hDLL) {
+    oapiUnregisterCustomCmd(g_dwCmd);
+    CloseConsole();
+}
