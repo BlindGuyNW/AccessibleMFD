@@ -18,6 +18,7 @@ void PrintMFD();
 void PrintDock();
 void PrintFuel();
 void PrintMap(const char* arg);
+void PrintSurface(const char* arg);
 void PrintAll();
 
 #endif // QUERIES_H

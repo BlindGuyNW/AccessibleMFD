@@ -68,3 +68,35 @@ void FormatLatLon(double lat, double lon, char* buf, int len) {
     _snprintf(buf, len, "%.2f%c%c, %.2f%c%c", latDeg, 0xB0, latDir, lonDeg, 0xB0, lonDir);
     buf[len-1] = '\0';
 }
+
+void FormatSpeed(double mps, char* buf, int len) {
+    double absMps = fabs(mps);
+    if (absMps >= 1000.0)
+        _snprintf(buf, len, "%.2f km/s", mps / 1000.0);
+    else
+        _snprintf(buf, len, "%.1f m/s", mps);
+    buf[len-1] = '\0';
+}
+
+void FormatForce(double newtons, char* buf, int len) {
+    double absN = fabs(newtons);
+    if (absN >= 1e6)
+        _snprintf(buf, len, "%.2f MN", newtons / 1e6);
+    else if (absN >= 1e3)
+        _snprintf(buf, len, "%.2f kN", newtons / 1e3);
+    else
+        _snprintf(buf, len, "%.1f N", newtons);
+    buf[len-1] = '\0';
+}
+
+void FormatPressure(double pascals, char* buf, int len) {
+    double absPa = fabs(pascals);
+    double atm = pascals / 101325.0;
+    if (fabs(atm) >= 0.01)
+        _snprintf(buf, len, "%.3f atm", atm);
+    else if (absPa >= 1000.0)
+        _snprintf(buf, len, "%.2f kPa", pascals / 1000.0);
+    else
+        _snprintf(buf, len, "%.1f Pa", pascals);
+    buf[len-1] = '\0';
+}

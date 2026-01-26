@@ -39,7 +39,7 @@ Key locations for reference:
 | `Commands.cpp/.h` | Command registry and dispatch table |
 | `Formatting.cpp/.h` | Distance, time, lat/lon formatting helpers |
 | `OrbitalCalc.cpp/.h` | Hohmann, phase angle, plane change calculations |
-| `Queries.cpp/.h` | Data queries (vessel, orbit, flight, fuel, map) |
+| `Queries.cpp/.h` | Data queries (vessel, orbit, flight, surface, fuel, map) |
 | `Controls.cpp/.h` | Control commands (autopilot, throttle, warp) |
 | `Transfer.cpp/.h` | Transfer planner and target management |
 
@@ -51,6 +51,10 @@ Key locations for reference:
 | `v`, `vessel` | Vessel name, class, reference body |
 | `o`, `orbit` | Altitude, apoapsis, periapsis, inclination, eccentricity, period |
 | `f`, `flight` | Velocity, heading, pitch, bank |
+| `sf`, `surface` | Altitude, speed, attitude, atmosphere, aerodynamics |
+| `sf alt` | Detailed altitude, speed, and attitude |
+| `sf atm` | Atmospheric conditions (Mach, temperature, pressure) |
+| `sf forces` | Aerodynamic forces (lift, drag, L/D ratio) |
 | `m`, `mfd` | Left/right MFD modes |
 | `d`, `dock` | NAV target, distance, closure rate, relative velocities |
 | `fuel` | Fuel mass, capacity, percentage |
@@ -93,9 +97,11 @@ Key locations for reference:
 - `oapiGetTimeAcceleration/oapiSetTimeAcceleration()` - time warp
 - `oapiGetGbodyByName/oapiGetVesselByName()` - target lookup
 - `oapiGetGlobalPos/oapiGetGlobalVel()` - position/velocity for calculations
+- `VESSEL::GetAtmPressure/GetAtmTemperature/GetAtmDensity()` - atmospheric data
+- `VESSEL::GetMachNumber/GetDynPressure()` - aerodynamic state
+- `VESSEL::GetLift/GetDrag/GetAOA/GetSlipAngle()` - aerodynamic forces
 
 ## Future Ideas
 
 - RCS control (`rcs rot/lin/off`)
 - HUD/MFD mode switching
-- Atmospheric data (Mach, dynamic pressure, lift/drag)

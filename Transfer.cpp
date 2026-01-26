@@ -433,6 +433,10 @@ void PrintHelp() {
     printf("  v, vessel  - Vessel info\n");
     printf("  o, orbit   - Orbital data\n");
     printf("  f, flight  - Flight data\n");
+    printf("  sf, surface - Surface/atmosphere data\n");
+    printf("    sf alt   - Altitude/speed/attitude details\n");
+    printf("    sf atm   - Atmospheric conditions\n");
+    printf("    sf forces - Lift/drag forces\n");
     printf("  m, mfd     - MFD modes\n");
     printf("  d, dock    - Docking data\n");
     printf("  fuel       - Fuel status\n");

@@ -18,4 +18,13 @@ double CalcDistance(double lat1, double lon1, double lat2, double lon2, double r
 // Calculate initial bearing from point 1 to point 2
 double CalcBearing(double lat1, double lon1, double lat2, double lon2);
 
+// Format speed value with appropriate units (m/s, km/s)
+void FormatSpeed(double mps, char* buf, int len);
+
+// Format force value with appropriate units (N, kN, MN)
+void FormatForce(double newtons, char* buf, int len);
+
+// Format pressure value with appropriate units (Pa, kPa, atm)
+void FormatPressure(double pascals, char* buf, int len);
+
 #endif // FORMATTING_H

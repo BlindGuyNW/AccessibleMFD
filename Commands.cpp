@@ -43,6 +43,7 @@ static Command s_commands[] = {
 
     // Data queries (with args)
     {"map",      NULL,   true,  NULL, PrintMap},
+    {"surface",  "sf",   true,  NULL, PrintSurface},
 
     // Control commands (with args)
     {"nav",      "na",   true,  NULL, PrintNav},

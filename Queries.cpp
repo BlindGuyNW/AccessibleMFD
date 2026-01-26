@@ -307,6 +307,157 @@ void PrintMap(const char* arg) {
         printf("Ground Track: %.0f%c at %.1f m/s\n", trackHeading, 0xB0, groundSpeed);
 }
 
+// Helper: Print altitude data
+static void PrintSurfaceAltitude(VESSEL* v, bool detailed) {
+    char buf[64];
+
+    double alt = v->GetAltitude();
+    FormatDistance(alt, buf, sizeof(buf));
+    printf(detailed ? "Altitude: %s\n" : "Alt: %s\n", buf);
+
+    if (detailed) {
+        double altGround = v->GetAltitude(ALTMODE_GROUND);
+        FormatDistance(altGround, buf, sizeof(buf));
+        printf("Radar Alt: %s\n", buf);
+    }
+
+    VECTOR3 groundVel;
+    v->GetGroundspeedVector(FRAME_HORIZON, groundVel);
+    double vspd = groundVel.y;
+    if (detailed)
+        printf("Vertical Speed: %.1f m/s\n", vspd);
+    else if (fabs(vspd) >= 100)
+        printf("VS: %.0f m/s\n", vspd);
+    else
+        printf("VS: %.1f m/s\n", vspd);
+}
+
+// Helper: Print speed data
+static void PrintSurfaceSpeed(VESSEL* v, bool detailed) {
+    char buf[64];
+
+    double airspeed = v->GetAirspeed();
+    FormatSpeed(airspeed, buf, sizeof(buf));
+    printf(detailed ? "True Airspeed: %s\n" : "TAS: %s\n", buf);
+
+    double groundspeed = v->GetGroundspeed();
+    FormatSpeed(groundspeed, buf, sizeof(buf));
+    printf(detailed ? "Ground Speed: %s\n" : "GS: %s\n", buf);
+}
+
+// Helper: Print attitude data
+static void PrintSurfaceAttitude(VESSEL* v, bool detailed) {
+    double heading = posangle(v->GetYaw()) * DEG;
+    printf(detailed ? "Heading: %.1f deg\n" : "Hdg: %.1f deg\n", heading);
+    printf("Pitch: %.1f deg\n", v->GetPitch() * DEG);
+    printf("Bank: %.1f deg\n", v->GetBank() * DEG);
+    printf("AOA: %.1f deg\n", v->GetAOA() * DEG);
+    printf("Slip: %.1f deg\n", v->GetSlipAngle() * DEG);
+}
+
+// Helper: Print atmosphere data
+static void PrintSurfaceAtmosphere(VESSEL* v, bool detailed) {
+    char buf[64];
+
+    double mach = v->GetMachNumber();
+    printf("Mach: %.2f\n", mach);
+
+    double temp = v->GetAtmTemperature();
+    printf(detailed ? "Temperature: %.1f K (%.1f C)\n" : "OAT: %.1f K (%.1f C)\n",
+           temp, temp - 273.15);
+
+    double pressure = v->GetAtmPressure();
+    FormatPressure(pressure, buf, sizeof(buf));
+    printf(detailed ? "Static Pressure: %s\n" : "Pressure: %s\n", buf);
+
+    if (detailed) {
+        double density = v->GetAtmDensity();
+        printf("Density: %.6f kg/m3\n", density);
+    }
+
+    double dynP = v->GetDynPressure();
+    FormatPressure(dynP, buf, sizeof(buf));
+    printf(detailed ? "Dynamic Pressure: %s\n" : "Dyn Press: %s\n", buf);
+}
+
+// Helper: Print aerodynamic forces
+static void PrintSurfaceForces(VESSEL* v, bool detailed) {
+    char buf[64];
+
+    double lift = v->GetLift();
+    FormatForce(lift, buf, sizeof(buf));
+    printf("Lift: %s\n", buf);
+
+    double drag = v->GetDrag();
+    FormatForce(drag, buf, sizeof(buf));
+    printf("Drag: %s\n", buf);
+
+    if (fabs(drag) > 1e-6) {
+        printf(detailed ? "L/D Ratio: %.2f\n" : "L/D: %.2f\n", lift / drag);
+    }
+
+    if (detailed) {
+        printf("\nAngle of Attack: %.1f deg\n", v->GetAOA() * DEG);
+        printf("Slip Angle: %.1f deg\n", v->GetSlipAngle() * DEG);
+    }
+}
+
+void PrintSurface(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    // Detect atmosphere
+    bool hasAtmosphere = (v->GetAtmPressure() > 0);
+
+    // No argument: show summary
+    if (!arg || arg[0] == '\0') {
+        PrintSurfaceAltitude(v, false);
+        PrintSurfaceSpeed(v, false);
+        PrintSurfaceAttitude(v, false);
+        if (hasAtmosphere) {
+            PrintSurfaceAtmosphere(v, false);
+        }
+        PrintSurfaceForces(v, false);
+        return;
+    }
+
+    // Subcommand: alt
+    if (_stricmp(arg, "alt") == 0) {
+        printf("=== Altitude ===\n");
+        PrintSurfaceAltitude(v, true);
+        printf("\n=== Speed ===\n");
+        PrintSurfaceSpeed(v, true);
+        printf("\n=== Attitude ===\n");
+        PrintSurfaceAttitude(v, true);
+        return;
+    }
+
+    // Subcommand: atm
+    if (_stricmp(arg, "atm") == 0) {
+        if (!hasAtmosphere) {
+            printf("No atmosphere\n");
+            return;
+        }
+        printf("=== Atmosphere ===\n");
+        PrintSurfaceAtmosphere(v, true);
+        return;
+    }
+
+    // Subcommand: forces
+    if (_stricmp(arg, "forces") == 0) {
+        printf("=== Aerodynamic Forces ===\n");
+        PrintSurfaceForces(v, true);
+        return;
+    }
+
+    // Unknown subcommand
+    printf("Unknown surface command: %s\n", arg);
+    printf("Options: alt, atm, forces\n");
+}
+
 void PrintAll() {
     printf("=== VESSEL ===\n");
     PrintVessel();
