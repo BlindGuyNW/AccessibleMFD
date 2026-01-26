@@ -14,6 +14,16 @@ Or set `ORBITER_DIR` environment variable, or edit the default in CMakeLists.txt
 
 Output: `${ORBITER_DIR}/Modules/Plugin/AccessibleMFD.dll`
 
+## Orbiter SDK Reference
+
+Orbiter installation: `C:/Orbit`
+
+Key locations for reference:
+- `C:/Orbit/Orbitersdk/include/` - API headers
+- `C:/Orbit/Orbitersdk/samples/` - Sample modules
+- `C:/Orbit/Orbitersdk/doc/` - API documentation
+- `C:/Orbit/Config/` - Vessel and scenario configs
+
 ## Architecture
 
 - Console-based UI via `AllocConsole()` - no graphics to parse
