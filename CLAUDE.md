@@ -4,13 +4,15 @@ Screen reader accessible console interface for Orbiter Space Simulator.
 
 ## Build
 
-Requires Orbiter SDK. Build from Orbiter root:
+Standalone build (can be located anywhere):
 ```bash
-cmake -B build -G "Visual Studio 17 2022" -A Win32
-cmake --build build --target AccessibleMFD --config Release
+cmake -B build -G "Visual Studio 17 2022" -A Win32 -DORBITER_DIR=C:/YourOrbiterPath
+cmake --build build --config Release
 ```
 
-Output: `Modules/Plugin/AccessibleMFD.dll`
+Or set `ORBITER_DIR` environment variable, or edit the default in CMakeLists.txt.
+
+Output: `${ORBITER_DIR}/Modules/Plugin/AccessibleMFD.dll`
 
 ## Architecture
 
@@ -20,6 +22,7 @@ Output: `Modules/Plugin/AccessibleMFD.dll`
 
 ## Commands
 
+### Data Queries
 | Command | Description |
 |---------|-------------|
 | `v`, `vessel` | Vessel name, class, reference body |
@@ -28,10 +31,33 @@ Output: `Modules/Plugin/AccessibleMFD.dll`
 | `m`, `mfd` | Left/right MFD modes |
 | `d`, `dock` | NAV target, distance, closure rate, relative velocities |
 | `fuel` | Fuel mass, capacity, percentage |
+| `map` | Position, altitude, ground track |
+| `map bases` | List nearby bases with distance/bearing |
 | `a`, `all` | All data queries combined |
+
+### Transfer Planner
+| Command | Description |
+|---------|-------------|
+| `tgt` | Show current target |
+| `tgt <name>` | Set target (body or vessel) |
+| `tgt list` | List celestial bodies and vessels |
+| `tgt clear` | Clear target |
+| `tr` | Transfer summary (Hohmann, phase, plane change) |
+| `tr hohmann` | Hohmann transfer delta-v and time |
+| `tr phase` | Phase angle to transfer window |
+| `tr plane` | Plane change requirements |
+| `tr ren` | Rendezvous data (vessel targets) |
+
+### Control
+| Command | Description |
+|---------|-------------|
 | `na [mode]` | Autopilot: pro/retro/nml/anml/kill/level/halt/off |
 | `th [n]` | Throttle 0-100, or `th main/retro/hover n` |
 | `warp [n]` | Time warp (0.1 = slow motion, 1 = normal, max 100000) |
+
+### System
+| Command | Description |
+|---------|-------------|
 | `?`, `help` | Show help |
 | `q`, `quit` | Close console |
 
@@ -42,10 +68,11 @@ Output: `Modules/Plugin/AccessibleMFD.dll`
 - `VESSEL::GetNavmodeState/ToggleNavmode()` - autopilot control
 - `VESSEL::GetEngineLevel/SetEngineLevel()` - engine throttle
 - `oapiGetTimeAcceleration/oapiSetTimeAcceleration()` - time warp
+- `oapiGetGbodyByName/oapiGetVesselByName()` - target lookup
+- `oapiGetGlobalPos/oapiGetGlobalVel()` - position/velocity for calculations
 
 ## Future Ideas
 
 - RCS control (`rcs rot/lin/off`)
-- Targeting (`target <name>`, `target list`)
 - HUD/MFD mode switching
 - Atmospheric data (Mach, dynamic pressure, lift/drag)
