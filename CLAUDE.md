@@ -30,6 +30,19 @@ Key locations for reference:
 - On-demand queries - user types command, gets text response
 - Accessed via Ctrl+F4 "Custom Functions" menu in Orbiter
 
+### Source Files
+
+| File | Purpose |
+|------|---------|
+| `AccessibleMFD.cpp` | Module entry points (InitModule/ExitModule) |
+| `Console.cpp/.h` | Console window, thread, input loop |
+| `Commands.cpp/.h` | Command registry and dispatch table |
+| `Formatting.cpp/.h` | Distance, time, lat/lon formatting helpers |
+| `OrbitalCalc.cpp/.h` | Hohmann, phase angle, plane change calculations |
+| `Queries.cpp/.h` | Data queries (vessel, orbit, flight, fuel, map) |
+| `Controls.cpp/.h` | Control commands (autopilot, throttle, warp) |
+| `Transfer.cpp/.h` | Transfer planner and target management |
+
 ## Commands
 
 ### Data Queries

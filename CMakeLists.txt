@@ -76,15 +76,34 @@ set(PRJ AccessibleMFD)
 
 set(Sources
     AccessibleMFD.cpp
+    Console.cpp
+    Commands.cpp
+    Formatting.cpp
+    OrbitalCalc.cpp
+    Queries.cpp
+    Controls.cpp
+    Transfer.cpp
+)
+
+set(Headers
+    Console.h
+    Commands.h
+    Formatting.h
+    OrbitalCalc.h
+    Queries.h
+    Controls.h
+    Transfer.h
 )
 
 # Collect SDK headers for IDE convenience
 file(GLOB APIHeaders "${ORBITER_SDK_INCLUDE}/*.h")
 source_group("API Headers" FILES ${APIHeaders})
 source_group("Source Files" FILES ${Sources})
+source_group("Header Files" FILES ${Headers})
 
 add_library(${PRJ} SHARED
     ${Sources}
+    ${Headers}
     ${APIHeaders}
 )
 
