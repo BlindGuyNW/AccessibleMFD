@@ -769,7 +769,11 @@ void PrintHelp() {
     printf("    sf atm   - Atmospheric conditions\n");
     printf("    sf forces - Lift/drag forces\n");
     printf("  m, mfd     - MFD modes\n");
-    printf("  d, dock    - Docking data\n");
+    printf("  d, dock    - Docking guidance\n");
+    printf("    d auto [n] - Auto-dock to target port n (default: IDS port)\n");
+    printf("    d align  - Auto-align attitude only\n");
+    printf("    d watch  - Continuous updates to clipboard\n");
+    printf("    d ports  - List our ports and target ports\n");
     printf("  fuel       - Fuel status\n");
     printf("  map        - Position, altitude, ground track\n");
     printf("  map bases  - List bases with distance/bearing\n");
