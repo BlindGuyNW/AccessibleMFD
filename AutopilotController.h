@@ -63,8 +63,6 @@ private:
     double CalculateTargetPitch(double altitude) const;
     double CalculateThrottle(VESSEL* v) const;
     bool CheckMECOCondition(VESSEL* v) const;
-    bool CheckCircularizationStart(VESSEL* v) const;
-    bool CheckCircularizationEnd(VESSEL* v) const;
     bool CheckFuelExhaustion(VESSEL* v) const;
 
     // Control execution

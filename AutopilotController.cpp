@@ -15,7 +15,7 @@ static const double LIFTOFF_DURATION = 10.0;    // Vertical climb duration
 static const double STATUS_INTERVAL = 15.0;     // Status update interval
 static const double MIN_THROTTLE = 0.5;         // Minimum throttle during maxQ
 static const double PROGRADE_ALT = 20000.0;     // Altitude to enable prograde hold
-static const double CIRC_LEAD_TIME = 30.0;      // Seconds before apoapsis to start circ burn
+// CIRC_LEAD_TIME removed - circularization now manual
 static const double LOW_FUEL_THRESHOLD = 0.05;  // 5% fuel = abort
 
 // Default configuration for Delta Glider
@@ -141,7 +141,7 @@ void AutopilotController::Update(double simt, double simdt) {
     m_met = simt - m_launchTime;
 
     // Check for fuel exhaustion during powered flight
-    if (m_state == AP_LIFTOFF || m_state == AP_PITCHOVER || m_state == AP_CIRCULARIZE) {
+    if (m_state == AP_LIFTOFF || m_state == AP_PITCHOVER) {
         if (CheckFuelExhaustion(v)) {
             printf("ABORT - Fuel exhausted.\n");
             Abort();
@@ -153,7 +153,7 @@ void AutopilotController::Update(double simt, double simdt) {
     UpdateStateMachine(v, simt, simdt);
 
     // Execute guidance and control
-    if (m_state >= AP_LIFTOFF && m_state <= AP_CIRCULARIZE) {
+    if (m_state == AP_LIFTOFF || m_state == AP_PITCHOVER) {
         ExecuteGuidance(v, simdt);
     }
 
@@ -295,40 +295,41 @@ void AutopilotController::UpdateStateMachine(VESSEL* v, double simt, double simd
         case AP_PITCHOVER:
             // Follow pitch program until MECO
             if (CheckMECOCondition(v)) {
-                printf("MECO - Main engine cutoff.\n");
                 v->SetEngineLevel(ENGINE_MAIN, 0.0);
                 v->ActivateNavmode(NAVMODE_PROGRADE);
-                m_state = AP_COAST;
-            }
-            break;
-
-        case AP_COAST:
-            // Coast to apoapsis
-            if (CheckCircularizationStart(v)) {
-                printf("Circularization burn initiated.\n");
-                v->SetEngineLevel(ENGINE_MAIN, 1.0);
-                m_state = AP_CIRCULARIZE;
-            }
-            break;
-
-        case AP_CIRCULARIZE:
-            // Burn until orbit is circular
-            if (CheckCircularizationEnd(v)) {
-                printf("Circularization complete.\n");
-                SafeShutdown(v);
                 m_state = AP_COMPLETE;
 
-                // Print final orbit info
+                // Get orbital info for guidance
                 OBJHANDLE hRef = v->GetGravityRef();
                 ELEMENTS el;
                 ORBITPARAM prm;
                 if (v->GetElements(hRef, el, &prm, 0, FRAME_ECL)) {
                     double refSize = oapiGetSize(hRef);
-                    printf("Orbit achieved: %.1f x %.1f km\n",
-                           (prm.PeD - refSize) / 1000.0,
-                           (prm.ApD - refSize) / 1000.0);
+                    double apAlt = (prm.ApD - refSize) / 1000.0;
+                    double peAlt = (prm.PeD - refSize) / 1000.0;
+
+                    char apTBuf[32];
+                    FormatTime(prm.ApT, apTBuf, sizeof(apTBuf));
+
+                    printf("\nMECO - Main engine cutoff.\n");
+                    printf("Apoapsis: %.1f km | Periapsis: %.1f km\n", apAlt, peAlt);
+                    printf("Time to apoapsis: %s\n", apTBuf);
+                    printf("\nFor circularization:\n");
+                    printf("  1. Coast to apoapsis (prograde hold active)\n");
+                    printf("  2. When ApT < 30s, throttle up and burn prograde\n");
+                    printf("  3. Cut engines when periapsis reaches %.0f km\n",
+                           m_config.targetAlt / 1000.0);
+                    printf("  Use 'orbit' command to monitor progress.\n");
+                } else {
+                    printf("\nMECO - Main engine cutoff. Prograde hold active.\n");
                 }
             }
+            break;
+
+        case AP_COAST:
+        case AP_CIRCULARIZE:
+            // These states no longer used - circularization is manual
+            // Keep cases to avoid compiler warning if enum values still exist
             break;
 
         default:
@@ -374,55 +375,9 @@ bool AutopilotController::CheckMECOCondition(VESSEL* v) const {
     double refSize = oapiGetSize(hRef);
     double apAlt = apDist - refSize;
 
-    // Check if we're above atmosphere using actual pressure
-    double atmPressure = v->GetAtmPressure();
-    bool aboveAtmosphere = (atmPressure < 1.0);  // Less than 1 Pa
-
-    return (apAlt >= m_config.targetAlt && aboveAtmosphere);
-}
-
-bool AutopilotController::CheckCircularizationStart(VESSEL* v) const {
-    // Start circularization burn when approaching apoapsis
-    OBJHANDLE hRef = v->GetGravityRef();
-    if (!hRef) return false;
-
-    ELEMENTS el;
-    ORBITPARAM prm;
-    if (!v->GetElements(hRef, el, &prm, 0, FRAME_ECL)) return false;
-
-    // Calculate required delta-V for circularization
-    double gm = GetGM(hRef);
-    double vAtAp = sqrt(gm * (2.0 / prm.ApD - 1.0 / el.a));  // Velocity at apoapsis
-    double vCirc = sqrt(gm / prm.ApD);  // Circular velocity at apoapsis altitude
-    double deltaV = vCirc - vAtAp;
-
-    // Calculate burn time based on actual thrust and mass
-    double thrust = v->GetMaxThrust(ENGINE_MAIN);
-    double mass = v->GetMass();
-    if (thrust <= 0 || mass <= 0) return false;
-
-    double accel = thrust / mass;
-    double burnTime = deltaV / accel;
-
-    // Start burn half the burn time before apoapsis, plus lead time for orientation
-    return (prm.ApT > 0 && prm.ApT < burnTime / 2.0 + CIRC_LEAD_TIME);
-}
-
-bool AutopilotController::CheckCircularizationEnd(VESSEL* v) const {
-    // End circularization when orbit is sufficiently circular
-    OBJHANDLE hRef = v->GetGravityRef();
-    if (!hRef) return false;
-
-    ELEMENTS el;
-    ORBITPARAM prm;
-    if (!v->GetElements(hRef, el, &prm, 0, FRAME_ECL)) return false;
-
-    double refSize = oapiGetSize(hRef);
-    double peAlt = prm.PeD - refSize;
-
-    // Consider circular when eccentricity is very low
-    // Or when periapsis reaches ~95% of target
-    return (el.e < 0.01 || peAlt > m_config.targetAlt * 0.95);
+    // Cut at target apoapsis - don't wait for atmosphere exit
+    // (waiting caused overshoot when apoapsis reached target while still in atmosphere)
+    return (apAlt >= m_config.targetAlt);
 }
 
 bool AutopilotController::CheckFuelExhaustion(VESSEL* v) const {
@@ -510,19 +465,8 @@ void AutopilotController::ExecuteGuidance(VESSEL* v, double simdt) {
         }
 
         case AP_COAST:
-            // Prograde hold, engines off
-            v->SetEngineLevel(ENGINE_MAIN, 0.0);
-            if (!v->GetNavmodeState(NAVMODE_PROGRADE)) {
-                v->ActivateNavmode(NAVMODE_PROGRADE);
-            }
-            break;
-
         case AP_CIRCULARIZE:
-            // Prograde hold, full throttle
-            v->SetEngineLevel(ENGINE_MAIN, 1.0);
-            if (!v->GetNavmodeState(NAVMODE_PROGRADE)) {
-                v->ActivateNavmode(NAVMODE_PROGRADE);
-            }
+            // These states no longer used - circularization is manual
             break;
 
         default:
