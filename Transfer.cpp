@@ -353,9 +353,12 @@ void PrintTransfer(const char* arg) {
         } else if (_stricmp(arg, "ren") == 0 || _stricmp(arg, "rendezvous") == 0) {
             PrintRendezvous();
             return;
+        } else if (_stricmp(arg, "int") == 0 || _stricmp(arg, "intersect") == 0) {
+            PrintIntersect();
+            return;
         } else {
             printf("Unknown transfer command: %s\n", arg);
-            printf("Options: hohmann, phase, plane, ren\n");
+            printf("Options: hohmann, phase, plane, ren, int\n");
             return;
         }
     }
@@ -451,6 +454,194 @@ void PrintTransfer(const char* arg) {
             printf("  Closure Rate: %.2f m/s\n", rd.closureRate);
         }
     }
+}
+
+void PrintIntersect() {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    // Check if targeting the reference body itself
+    if (g_hTarget == hRef) {
+        printf("Cannot calculate intersection with current reference body\n");
+        return;
+    }
+
+    OrbitIntersect oi = CalcOrbitIntersection(v, g_hTarget, hRef);
+
+    if (!oi.valid) {
+        printf("Cannot calculate orbit intersection\n");
+        printf("(Vessel may be on escape trajectory)\n");
+        return;
+    }
+
+    char targetName[256];
+    oapiGetObjectName(g_hTarget, targetName, 256);
+
+    printf("=== ORBIT INTERSECTION ===\n");
+    printf("Target: %s\n", targetName);
+
+    if (!oi.exists) {
+        printf("No intersection points found\n");
+        return;
+    }
+
+    // Format distances and times
+    char dist1[64], dist2[64];
+    char time1[64], time2[64];
+    char tgtTime1[64], tgtTime2[64];
+
+    FormatDistance(oi.distance1, dist1, sizeof(dist1));
+    FormatDistance(oi.distance2, dist2, sizeof(dist2));
+    FormatTime(oi.timeToInt1, time1, sizeof(time1));
+    FormatTime(oi.timeToInt2, time2, sizeof(time2));
+    FormatTime(oi.tgtTimeToInt1, tgtTime1, sizeof(tgtTime1));
+    FormatTime(oi.tgtTimeToInt2, tgtTime2, sizeof(tgtTime2));
+
+    printf("\nIntersection 1:\n");
+    printf("  Longitude: %.1f deg\n", oi.longitude1 * DEG);
+    printf("  Distance:  %s\n", dist1);
+    printf("  Ship TtI:  %s\n", time1);
+    printf("  Tgt TtI:   %s\n", tgtTime1);
+    double timeDiff1 = oi.timeToInt1 - oi.tgtTimeToInt1;
+    printf("  DTi:       %.1f s (%s)\n", fabs(timeDiff1),
+           timeDiff1 > 0 ? "ship arrives later" : "ship arrives first");
+
+    printf("\nIntersection 2:\n");
+    printf("  Longitude: %.1f deg\n", oi.longitude2 * DEG);
+    printf("  Distance:  %s\n", dist2);
+    printf("  Ship TtI:  %s\n", time2);
+    printf("  Tgt TtI:   %s\n", tgtTime2);
+    double timeDiff2 = oi.timeToInt2 - oi.tgtTimeToInt2;
+    printf("  DTi:       %.1f s (%s)\n", fabs(timeDiff2),
+           timeDiff2 > 0 ? "ship arrives later" : "ship arrives first");
+
+    // Recommend closest timing
+    if (fabs(timeDiff1) < fabs(timeDiff2)) {
+        printf("\nBest match: Intersection 1 (DTi %.1f s)\n", fabs(timeDiff1));
+    } else {
+        printf("\nBest match: Intersection 2 (DTi %.1f s)\n", fabs(timeDiff2));
+    }
+}
+
+void PrintSync(const char* arg) {
+    VESSEL* v = oapiGetFocusInterface();
+    if (!v) {
+        printf("No vessel\n");
+        return;
+    }
+
+    if (!g_hTarget) {
+        printf("No target selected\n");
+        return;
+    }
+
+    OBJHANDLE hRef = v->GetGravityRef();
+    if (!hRef) {
+        printf("No reference body\n");
+        return;
+    }
+
+    // Check if targeting the reference body itself
+    if (g_hTarget == hRef) {
+        printf("Cannot sync with current reference body\n");
+        return;
+    }
+
+    // Parse mode from argument
+    SyncRefMode mode = SYNC_INTERSECT1;
+    if (arg && arg[0] != '\0') {
+        if (_stricmp(arg, "int1") == 0 || _stricmp(arg, "intersect1") == 0) {
+            mode = SYNC_INTERSECT1;
+        } else if (_stricmp(arg, "int2") == 0 || _stricmp(arg, "intersect2") == 0) {
+            mode = SYNC_INTERSECT2;
+        } else if (_stricmp(arg, "pe") == 0 || _stricmp(arg, "shippe") == 0) {
+            mode = SYNC_SHIP_PE;
+        } else if (_stricmp(arg, "ap") == 0 || _stricmp(arg, "shipap") == 0) {
+            mode = SYNC_SHIP_AP;
+        } else if (_stricmp(arg, "tgtpe") == 0) {
+            mode = SYNC_TGT_PE;
+        } else if (_stricmp(arg, "tgtap") == 0) {
+            mode = SYNC_TGT_AP;
+        } else {
+            printf("Unknown sync mode: %s\n", arg);
+            printf("Options: int1, int2, pe, ap, tgtpe, tgtap\n");
+            return;
+        }
+    }
+
+    SyncData sd = CalcSync(v, g_hTarget, hRef, mode);
+
+    if (!sd.valid) {
+        printf("Cannot calculate sync data\n");
+        printf("(Vessel may be on escape trajectory)\n");
+        return;
+    }
+
+    char targetName[256];
+    oapiGetObjectName(g_hTarget, targetName, 256);
+
+    // Mode name
+    const char* modeName = "Intersect 1";
+    switch (mode) {
+        case SYNC_INTERSECT2: modeName = "Intersect 2"; break;
+        case SYNC_SHIP_PE: modeName = "Ship Pe"; break;
+        case SYNC_SHIP_AP: modeName = "Ship Ap"; break;
+        case SYNC_TGT_PE: modeName = "Target Pe"; break;
+        case SYNC_TGT_AP: modeName = "Target Ap"; break;
+        default: break;
+    }
+
+    printf("=== ORBIT SYNC ===\n");
+    printf("Target: %s\n", targetName);
+    printf("Reference: %s (%.1f deg)\n", modeName, sd.refLongitude * DEG);
+
+    printf("\n Orb   Ship TtRef    Tgt TtRef      DTmin\n");
+    printf("----  -----------  -----------  ----------\n");
+
+    for (int i = 0; i < 5; i++) {
+        char shipTime[32], tgtTime[32];
+        FormatTime(sd.shipTimeToRef[i], shipTime, sizeof(shipTime));
+        FormatTime(sd.tgtTimeToRef[i], tgtTime, sizeof(tgtTime));
+
+        // Find best target orbit for this ship orbit
+        double bestDiff = 1e20;
+        int bestTgt = 0;
+        for (int j = 0; j < 10; j++) {
+            double diff = fabs(sd.shipTimeToRef[i] - sd.tgtTimeToRef[j]);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                bestTgt = j;
+            }
+        }
+
+        char diffBuf[32];
+        FormatTime(bestDiff, diffBuf, sizeof(diffBuf));
+
+        // Mark best match
+        char marker = (i == sd.bestShipOrbit) ? '*' : ' ';
+        printf("%c %d   %11s  %11s  %10s\n", marker, i, shipTime, tgtTime, diffBuf);
+    }
+
+    printf("\nBest match: Ship orbit %d, Target orbit %d\n",
+           sd.bestShipOrbit, sd.bestTgtOrbit);
+
+    char minDiffBuf[64];
+    FormatTime(sd.minTimeDiff, minDiffBuf, sizeof(minDiffBuf));
+    printf("Minimum DTmin: %s\n", minDiffBuf);
 }
 
 void PrintAlign(const char* arg) {
@@ -550,6 +741,22 @@ void PrintAlign(const char* arg) {
         printf("  Burn: %s\n", burnTimeBuf);
         printf("  TtB: %s\n", ttbBuf);
     }
+
+    // Show surface launch window if in surface mode
+    if (mode == ALIGN_SURFACE) {
+        double launchWindow = CalcSurfaceLaunchWindow(v, g_hTarget, hRef);
+        if (launchWindow >= 0) {
+            char windowBuf[64];
+            FormatTime(launchWindow, windowBuf, sizeof(windowBuf));
+            printf("\n=== Surface Launch Window ===\n");
+            if (launchWindow < 60) {
+                printf("Launch window NOW!\n");
+            } else {
+                printf("Next window in: %s\n", windowBuf);
+            }
+            printf("(When launch site crosses target orbital plane)\n");
+        }
+    }
 }
 
 void PrintHelp() {
@@ -576,6 +783,11 @@ void PrintHelp() {
     printf("  tr phase   - Phase angle to transfer window\n");
     printf("  tr plane   - Plane change requirements\n");
     printf("  tr ren     - Rendezvous data (vessel targets)\n");
+    printf("  tr int     - Orbit intersection points and timing\n");
+    printf("  sync       - Multi-orbit synchronization table\n");
+    printf("    sync int1/int2 - Use orbit intersection as reference\n");
+    printf("    sync pe/ap     - Use ship periapsis/apoapsis\n");
+    printf("    sync tgtpe/tgtap - Use target periapsis/apoapsis\n");
     printf("  al, align  - Plane alignment (Inc, LAN, nodes, burn)\n");
     printf("    al orbit   - Orbit mode (osculating elements)\n");
     printf("    al ballistic - Ballistic mode (suborbital)\n");

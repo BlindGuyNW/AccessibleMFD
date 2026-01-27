@@ -54,6 +54,7 @@ static Command s_commands[] = {
     // Transfer planner (with args)
     {"target",   "tgt",  true,  NULL, PrintTarget},
     {"transfer", "tr",   true,  NULL, PrintTransfer},
+    {"sync",     NULL,   true,  NULL, PrintSync},
     {"align",    "al",   true,  NULL, PrintAlign},
 
     // Autopilot (with args)

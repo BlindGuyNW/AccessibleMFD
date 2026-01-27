@@ -13,6 +13,12 @@ void PrintPlane();
 void PrintRendezvous();
 void PrintTransfer(const char* arg);
 
+// Orbit intersection display
+void PrintIntersect();
+
+// Multi-orbit sync display
+void PrintSync(const char* arg);
+
 // Plane alignment display
 void PrintAlign(const char* arg);
 

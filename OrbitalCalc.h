@@ -81,6 +81,44 @@ enum AlignMode {
     ALIGN_SURFACE
 };
 
+// Orbit intersection data
+struct OrbitIntersect {
+    bool exists;           // Whether orbits intersect
+    double longitude1;     // True longitude of first intersection [rad]
+    double longitude2;     // True longitude of second intersection [rad]
+    double distance1;      // Distance from reference body at int 1 [m]
+    double distance2;      // Distance from reference body at int 2 [m]
+    double timeToInt1;     // Time to first intersection [s]
+    double timeToInt2;     // Time to second intersection [s]
+    double tgtTimeToInt1;  // Target time to first intersection [s]
+    double tgtTimeToInt2;  // Target time to second intersection [s]
+    VECTOR3 intPos1;       // Position vector at intersection 1
+    VECTOR3 intPos2;       // Position vector at intersection 2
+    bool valid;
+};
+
+// Orbit synchronization data
+struct SyncData {
+    int refMode;              // Reference axis mode
+    double refLongitude;      // Reference axis longitude [rad]
+    double shipTimeToRef[10]; // Ship time to ref for orbits 0-9 [s]
+    double tgtTimeToRef[10];  // Target time to ref for orbits 0-9 [s]
+    int bestShipOrbit;        // Best match orbit number for ship
+    int bestTgtOrbit;         // Best match orbit number for target
+    double minTimeDiff;       // Minimum time difference [s]
+    bool valid;
+};
+
+// Sync reference modes
+enum SyncRefMode {
+    SYNC_INTERSECT1,    // First orbit intersection
+    SYNC_INTERSECT2,    // Second orbit intersection
+    SYNC_SHIP_PE,       // Ship periapsis
+    SYNC_SHIP_AP,       // Ship apoapsis
+    SYNC_TGT_PE,        // Target periapsis
+    SYNC_TGT_AP         // Target apoapsis
+};
+
 // Get GM (gravitational parameter) for a body
 double GetGM(OBJHANDLE hBody);
 
@@ -100,5 +138,15 @@ RendezvousData CalcRendezvous(VESSEL* v, OBJHANDLE hTarget);
 
 // Calculate plane alignment data for orbital plane matching
 PlaneAlignData CalcPlaneAlign(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef, AlignMode mode);
+
+// Calculate orbit intersection points between vessel and target
+OrbitIntersect CalcOrbitIntersection(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef);
+
+// Calculate multi-orbit synchronization timing
+SyncData CalcSync(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef, SyncRefMode mode);
+
+// Calculate surface launch window for plane alignment
+// Returns time in seconds until next launch window, or -1 if not applicable
+double CalcSurfaceLaunchWindow(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef);
 
 #endif // ORBITALCALC_H

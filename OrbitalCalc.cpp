@@ -478,3 +478,391 @@ PlaneAlignData CalcPlaneAlign(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef, Alig
     pa.valid = true;
     return pa;
 }
+
+// Helper: Calculate true anomaly at intersection with a direction vector
+static double CalcTrueAnomalyAtDirection(double a, double e, const VECTOR3& periDir,
+                                          const VECTOR3& h_unit, const VECTOR3& targetDir) {
+    // Project target direction onto orbital plane
+    VECTOR3 minorDir = crossp(h_unit, periDir);
+    double majorComp = dotp(targetDir, periDir);
+    double minorComp = dotp(targetDir, minorDir);
+
+    // True anomaly from atan2
+    double ta = atan2(minorComp, majorComp);
+    if (ta < 0) ta += 2.0 * PI;
+    return ta;
+}
+
+// Helper: Calculate radius at a given true anomaly
+static double CalcRadiusAtTA(double a, double e, double ta) {
+    if (e >= 1.0) return a;  // Escape trajectory guard
+    double p = a * (1.0 - e * e);  // Semi-latus rectum
+    double denom = 1.0 + e * cos(ta);
+    if (denom <= 0) return a * 10.0;  // Beyond orbit for hyperbolic
+    return p / denom;
+}
+
+OrbitIntersect CalcOrbitIntersection(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef) {
+    OrbitIntersect oi = {0};
+    oi.valid = false;
+    oi.exists = false;
+
+    if (!v || !hTarget || !hRef) return oi;
+
+    // Get vessel orbital elements
+    ELEMENTS el_v;
+    ORBITPARAM prm_v;
+    if (!v->GetElements(hRef, el_v, &prm_v, 0, FRAME_ECL)) return oi;
+
+    // Skip if vessel is on escape trajectory
+    if (el_v.e >= 1.0) return oi;
+
+    // Get vessel position and velocity relative to reference body
+    VECTOR3 vesselPos, vesselVel, refPos, refVel;
+    v->GetGlobalPos(vesselPos);
+    v->GetGlobalVel(vesselVel);
+    oapiGetGlobalPos(hRef, &refPos);
+    oapiGetGlobalVel(hRef, &refVel);
+
+    VECTOR3 relPos_v = vesselPos - refPos;
+    VECTOR3 relVel_v = vesselVel - refVel;
+
+    // Vessel orbital plane normal: h = r x v
+    VECTOR3 h_v = crossp(relPos_v, relVel_v);
+    double h_v_mag = length(h_v);
+    if (h_v_mag < 1e-10) return oi;
+    VECTOR3 h_v_unit = h_v / h_v_mag;
+
+    // Get target position and velocity
+    VECTOR3 targetPos, targetVel;
+    oapiGetGlobalPos(hTarget, &targetPos);
+    oapiGetGlobalVel(hTarget, &targetVel);
+
+    VECTOR3 relPos_t = targetPos - refPos;
+    VECTOR3 relVel_t = targetVel - refVel;
+
+    // Target orbital plane normal
+    VECTOR3 h_t = crossp(relPos_t, relVel_t);
+    double h_t_mag = length(h_t);
+    if (h_t_mag < 1e-10) return oi;
+    VECTOR3 h_t_unit = h_t / h_t_mag;
+
+    double gm = GetGM(hRef);
+
+    // Calculate vessel periapsis direction (eccentricity vector direction)
+    VECTOR3 eVec_v = crossp(relVel_v, h_v) / gm - relPos_v / length(relPos_v);
+    double eMag_v = length(eVec_v);
+    VECTOR3 periDir_v = (eMag_v > 1e-10) ? eVec_v / eMag_v : relPos_v / length(relPos_v);
+
+    // Line of nodes = h_v x h_t
+    VECTOR3 nodeDir = crossp(h_v_unit, h_t_unit);
+    double nodeDirMag = length(nodeDir);
+
+    // If orbital planes are coplanar, use periapsis directions instead
+    if (nodeDirMag < 1e-10) {
+        // Coplanar orbits - use vessel periapsis and apoapsis as reference
+        nodeDir = periDir_v;
+        nodeDirMag = 1.0;
+    } else {
+        nodeDir = nodeDir / nodeDirMag;
+    }
+    VECTOR3 nodeDir2 = nodeDir * -1.0;  // Opposite direction
+
+    // True anomaly at each node for vessel
+    double ta_v1 = CalcTrueAnomalyAtDirection(el_v.a, el_v.e, periDir_v, h_v_unit, nodeDir);
+    double ta_v2 = CalcTrueAnomalyAtDirection(el_v.a, el_v.e, periDir_v, h_v_unit, nodeDir2);
+
+    // Radius at each node for vessel
+    double r_v1 = CalcRadiusAtTA(el_v.a, el_v.e, ta_v1);
+    double r_v2 = CalcRadiusAtTA(el_v.a, el_v.e, ta_v2);
+
+    // Get target orbital elements
+    ELEMENTS el_t;
+    ORBITPARAM prm_t;
+    bool hasTargetElements = false;
+
+    VESSEL* vTarget = oapiGetVesselInterface(hTarget);
+    if (vTarget) {
+        hasTargetElements = vTarget->GetElements(hRef, el_t, &prm_t, 0, FRAME_ECL);
+    }
+
+    if (!hasTargetElements) {
+        // Calculate from position/velocity
+        double r_t = length(relPos_t);
+        double v_t = length(relVel_t);
+        double energy = v_t * v_t / 2.0 - gm / r_t;
+        el_t.a = -gm / (2.0 * energy);
+        if (el_t.a > 0 && gm > 0) {
+            double h_scalar = length(h_t);
+            double eSquared = 1.0 - h_scalar * h_scalar / (gm * el_t.a);
+            el_t.e = (eSquared > 0) ? sqrt(eSquared) : 0.001;
+        } else {
+            el_t.e = 0.01;
+        }
+    }
+
+    // Calculate target periapsis direction
+    VECTOR3 eVec_t = crossp(relVel_t, h_t) / gm - relPos_t / length(relPos_t);
+    double eMag_t = length(eVec_t);
+    VECTOR3 periDir_t = (eMag_t > 1e-10) ? eVec_t / eMag_t : relPos_t / length(relPos_t);
+
+    // True anomaly at each node for target
+    double ta_t1 = CalcTrueAnomalyAtDirection(el_t.a, el_t.e, periDir_t, h_t_unit, nodeDir);
+    double ta_t2 = CalcTrueAnomalyAtDirection(el_t.a, el_t.e, periDir_t, h_t_unit, nodeDir2);
+
+    // Store intersection data
+    oi.exists = true;
+    oi.distance1 = r_v1;
+    oi.distance2 = r_v2;
+    oi.intPos1 = nodeDir * r_v1;
+    oi.intPos2 = nodeDir2 * r_v2;
+    oi.longitude1 = atan2(nodeDir.z, nodeDir.x);
+    if (oi.longitude1 < 0) oi.longitude1 += 2.0 * PI;
+    oi.longitude2 = atan2(nodeDir2.z, nodeDir2.x);
+    if (oi.longitude2 < 0) oi.longitude2 += 2.0 * PI;
+
+    // Calculate time to each intersection for vessel
+    oi.timeToInt1 = CalcTimeToTrueAnomaly(prm_v.TrA, ta_v1, el_v.a, el_v.e, gm);
+    oi.timeToInt2 = CalcTimeToTrueAnomaly(prm_v.TrA, ta_v2, el_v.a, el_v.e, gm);
+
+    // Calculate time to each intersection for target
+    double currentTA_t;
+    if (hasTargetElements) {
+        currentTA_t = prm_t.TrA;
+    } else {
+        currentTA_t = atan2(dotp(relPos_t, crossp(h_t_unit, periDir_t)), dotp(relPos_t, periDir_t));
+        if (currentTA_t < 0) currentTA_t += 2.0 * PI;
+    }
+    oi.tgtTimeToInt1 = CalcTimeToTrueAnomaly(currentTA_t, ta_t1, el_t.a, el_t.e, gm);
+    oi.tgtTimeToInt2 = CalcTimeToTrueAnomaly(currentTA_t, ta_t2, el_t.a, el_t.e, gm);
+
+    oi.valid = true;
+    return oi;
+}
+
+SyncData CalcSync(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef, SyncRefMode mode) {
+    SyncData sd = {0};
+    sd.valid = false;
+
+    if (!v || !hTarget || !hRef) return sd;
+
+    // Get vessel orbital elements
+    ELEMENTS el_v;
+    ORBITPARAM prm_v;
+    if (!v->GetElements(hRef, el_v, &prm_v, 0, FRAME_ECL)) return sd;
+
+    // Skip if vessel is on escape trajectory
+    if (el_v.e >= 1.0) return sd;
+
+    double gm = GetGM(hRef);
+    double shipPeriod = prm_v.T;
+
+    // Get vessel position and velocity
+    VECTOR3 vesselPos, vesselVel, refPos, refVel;
+    v->GetGlobalPos(vesselPos);
+    v->GetGlobalVel(vesselVel);
+    oapiGetGlobalPos(hRef, &refPos);
+    oapiGetGlobalVel(hRef, &refVel);
+    VECTOR3 relPos_v = vesselPos - refPos;
+    VECTOR3 relVel_v = vesselVel - refVel;
+
+    // Vessel angular momentum and periapsis direction
+    VECTOR3 h_v = crossp(relPos_v, relVel_v);
+    VECTOR3 h_v_unit = h_v / length(h_v);
+    VECTOR3 eVec_v = crossp(relVel_v, h_v) / gm - relPos_v / length(relPos_v);
+    double eMag_v = length(eVec_v);
+    VECTOR3 periDir_v = (eMag_v > 1e-10) ? eVec_v / eMag_v : relPos_v / length(relPos_v);
+
+    // Get target data
+    VECTOR3 targetPos, targetVel;
+    oapiGetGlobalPos(hTarget, &targetPos);
+    oapiGetGlobalVel(hTarget, &targetVel);
+    VECTOR3 relPos_t = targetPos - refPos;
+    VECTOR3 relVel_t = targetVel - refVel;
+
+    // Target orbital elements
+    ELEMENTS el_t;
+    ORBITPARAM prm_t;
+    double tgtPeriod;
+    bool hasTargetElements = false;
+    VESSEL* vTarget = oapiGetVesselInterface(hTarget);
+
+    VECTOR3 h_t = crossp(relPos_t, relVel_t);
+    double h_t_mag = length(h_t);
+    if (h_t_mag < 1e-10) return sd;
+    VECTOR3 h_t_unit = h_t / h_t_mag;
+    VECTOR3 eVec_t = crossp(relVel_t, h_t) / gm - relPos_t / length(relPos_t);
+    double eMag_t = length(eVec_t);
+    VECTOR3 periDir_t = (eMag_t > 1e-10) ? eVec_t / eMag_t : relPos_t / length(relPos_t);
+
+    if (vTarget && vTarget->GetElements(hRef, el_t, &prm_t, 0, FRAME_ECL)) {
+        tgtPeriod = prm_t.T;
+        hasTargetElements = true;
+    } else {
+        // Calculate period from position/velocity
+        double r_t = length(relPos_t);
+        double v_t = length(relVel_t);
+        double energy = v_t * v_t / 2.0 - gm / r_t;
+        double a_t = -gm / (2.0 * energy);
+        if (a_t > 0) {
+            tgtPeriod = 2.0 * PI * sqrt(a_t * a_t * a_t / gm);
+            el_t.a = a_t;
+            double eSquared = 1.0 - h_t_mag * h_t_mag / (gm * a_t);
+            el_t.e = (eSquared > 0) ? sqrt(eSquared) : 0.001;
+        } else {
+            return sd;  // Target on escape trajectory
+        }
+    }
+
+    // Determine reference direction based on mode
+    VECTOR3 refDir;
+    sd.refMode = mode;
+
+    switch (mode) {
+        case SYNC_SHIP_PE:
+            refDir = periDir_v;
+            break;
+        case SYNC_SHIP_AP:
+            refDir = periDir_v * -1.0;
+            break;
+        case SYNC_TGT_PE:
+            refDir = periDir_t;
+            break;
+        case SYNC_TGT_AP:
+            refDir = periDir_t * -1.0;
+            break;
+        case SYNC_INTERSECT1:
+        case SYNC_INTERSECT2:
+        default: {
+            // Use orbit intersection (line of nodes)
+            VECTOR3 nodeDir = crossp(h_v_unit, h_t_unit);
+            double nodeMag = length(nodeDir);
+            if (nodeMag > 1e-10) {
+                refDir = (mode == SYNC_INTERSECT2) ? nodeDir * -1.0 / nodeMag : nodeDir / nodeMag;
+            } else {
+                // Coplanar - use target periapsis as reference
+                refDir = periDir_t;
+            }
+            break;
+        }
+    }
+
+    sd.refLongitude = atan2(refDir.z, refDir.x);
+
+    // Calculate true anomaly at reference direction for vessel
+    double ta_v_ref = CalcTrueAnomalyAtDirection(el_v.a, el_v.e, periDir_v, h_v_unit, refDir);
+    double baseTimeToRef_v = CalcTimeToTrueAnomaly(prm_v.TrA, ta_v_ref, el_v.a, el_v.e, gm);
+
+    // Calculate true anomaly at reference direction for target
+    double ta_t_ref = CalcTrueAnomalyAtDirection(el_t.a, el_t.e, periDir_t, h_t_unit, refDir);
+    double currentTA_t;
+    if (hasTargetElements) {
+        currentTA_t = prm_t.TrA;
+    } else {
+        currentTA_t = atan2(dotp(relPos_t, crossp(h_t_unit, periDir_t)), dotp(relPos_t, periDir_t));
+        if (currentTA_t < 0) currentTA_t += 2.0 * PI;
+    }
+    double baseTimeToRef_t = CalcTimeToTrueAnomaly(currentTA_t, ta_t_ref, el_t.a, el_t.e, gm);
+
+    // Fill timing table for multiple orbits
+    sd.minTimeDiff = 1e20;
+    sd.bestShipOrbit = 0;
+    sd.bestTgtOrbit = 0;
+
+    for (int i = 0; i < 10; i++) {
+        sd.shipTimeToRef[i] = baseTimeToRef_v + i * shipPeriod;
+        sd.tgtTimeToRef[i] = baseTimeToRef_t + i * tgtPeriod;
+    }
+
+    // Find best match
+    for (int shipOrbit = 0; shipOrbit < 10; shipOrbit++) {
+        for (int tgtOrbit = 0; tgtOrbit < 10; tgtOrbit++) {
+            double diff = fabs(sd.shipTimeToRef[shipOrbit] - sd.tgtTimeToRef[tgtOrbit]);
+            if (diff < sd.minTimeDiff) {
+                sd.minTimeDiff = diff;
+                sd.bestShipOrbit = shipOrbit;
+                sd.bestTgtOrbit = tgtOrbit;
+            }
+        }
+    }
+
+    sd.valid = true;
+    return sd;
+}
+
+double CalcSurfaceLaunchWindow(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef) {
+    if (!v || !hTarget || !hRef) return -1;
+
+    // Get vessel's surface position
+    double lng, lat, rad;
+    v->GetEquPos(lng, lat, rad);
+
+    // Get target orbital plane
+    VECTOR3 targetPos, targetVel, refPos, refVel;
+    oapiGetGlobalPos(hTarget, &targetPos);
+    oapiGetGlobalVel(hTarget, &targetVel);
+    oapiGetGlobalPos(hRef, &refPos);
+    oapiGetGlobalVel(hRef, &refVel);
+
+    VECTOR3 relPos_t = targetPos - refPos;
+    VECTOR3 relVel_t = targetVel - refVel;
+
+    // Target orbital plane normal
+    VECTOR3 h_t = crossp(relPos_t, relVel_t);
+    double h_t_mag = length(h_t);
+    if (h_t_mag < 1e-10) return -1;
+    VECTOR3 h_t_unit = h_t / h_t_mag;
+
+    // Get reference body rotation parameters
+    double rotPeriod = oapiGetPlanetPeriod(hRef);
+    if (rotPeriod <= 0) return -1;
+
+    // Get current rotation angle of the body
+    double rotAngle = oapiGetPlanetCurrentRotation(hRef);
+
+    // Calculate the longitude where the target orbital plane intersects the equator
+    // Ascending node of target orbit relative to equator
+    VECTOR3 equatorNormal = {0, 1, 0};  // Ecliptic frame Y-axis
+    VECTOR3 lanDir = crossp(equatorNormal, h_t_unit);
+    double lanDirMag = length(lanDir);
+
+    if (lanDirMag < 1e-10) {
+        // Target orbit is equatorial, can launch anytime
+        return 0;
+    }
+    lanDir = lanDir / lanDirMag;
+
+    // Get launch site's longitude
+    double launchLng = lng;
+
+    // Target LAN in ecliptic frame
+    double targetLAN = atan2(lanDir.z, lanDir.x);
+    if (targetLAN < 0) targetLAN += 2.0 * PI;
+
+    // Current surface longitude that passes through target plane AN
+    // Need to account for body rotation
+    double surfaceLngAtAN = targetLAN - rotAngle;
+    while (surfaceLngAtAN < 0) surfaceLngAtAN += 2.0 * PI;
+    while (surfaceLngAtAN >= 2.0 * PI) surfaceLngAtAN -= 2.0 * PI;
+
+    // How far is launch site from the AN longitude?
+    double lngDiff = surfaceLngAtAN - launchLng;
+    while (lngDiff < 0) lngDiff += 2.0 * PI;
+    while (lngDiff >= 2.0 * PI) lngDiff -= 2.0 * PI;
+
+    // Time for that longitude to rotate to launch site
+    double timeToWindow = lngDiff / (2.0 * PI) * rotPeriod;
+
+    // Also check descending node (opposite side)
+    double surfaceLngAtDN = surfaceLngAtAN + PI;
+    if (surfaceLngAtDN >= 2.0 * PI) surfaceLngAtDN -= 2.0 * PI;
+
+    double lngDiffDN = surfaceLngAtDN - launchLng;
+    while (lngDiffDN < 0) lngDiffDN += 2.0 * PI;
+    while (lngDiffDN >= 2.0 * PI) lngDiffDN -= 2.0 * PI;
+
+    double timeToWindowDN = lngDiffDN / (2.0 * PI) * rotPeriod;
+
+    // Return the sooner window
+    return (timeToWindow < timeToWindowDN) ? timeToWindow : timeToWindowDN;
+}
