@@ -342,21 +342,37 @@ PlaneAlignData CalcPlaneAlign(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef, Alig
     if (h_t_mag < 1e-10) return pa;
     VECTOR3 h_t_unit = h_t / h_t_mag;
 
-    // Calculate target inclination and LAN from angular momentum vector
-    // In ecliptic frame, y-axis is the ecliptic normal
-    pa.targetInc = acos(h_t_unit.y) * DEG;
+    // Get target inclination and LAN - try GetElements first for consistency
+    // (vessel elements use FRAME_ECL, manual calculation from global coords is equatorial)
+    bool hasTargetElements = false;
+    VESSEL* vTarget = oapiGetVesselInterface(hTarget);
+    if (vTarget) {
+        ELEMENTS el_t;
+        ORBITPARAM prm_t;
+        if (vTarget->GetElements(hRef, el_t, &prm_t, 0, FRAME_ECL)) {
+            pa.targetInc = el_t.i * DEG;
+            pa.targetLAN = el_t.theta * DEG;
+            hasTargetElements = true;
+        }
+    }
 
-    // LAN is the angle of the ascending node in the ecliptic plane
-    // Node vector = ecliptic_normal x orbital_normal = [0,1,0] x h_t
-    VECTOR3 eclipticNormal = {0, 1, 0};
-    VECTOR3 nodeVec = crossp(eclipticNormal, h_t_unit);
-    double nodeVecMag = length(nodeVec);
-    if (nodeVecMag > 1e-10) {
-        nodeVec = nodeVec / nodeVecMag;
-        pa.targetLAN = atan2(nodeVec.z, nodeVec.x) * DEG;
-        if (pa.targetLAN < 0) pa.targetLAN += 360.0;
-    } else {
-        pa.targetLAN = 0;  // Equatorial orbit
+    if (!hasTargetElements) {
+        // Fallback: calculate from angular momentum vector
+        // Note: This uses equatorial frame (global coords), not ecliptic
+        // Results may differ from vessel elements by ~23.4 degrees for Earth-orbiting targets
+        pa.targetInc = acos(h_t_unit.y) * DEG;
+
+        // LAN: Node vector = equator_normal x orbital_normal = [0,1,0] x h_t
+        VECTOR3 equatorNormal = {0, 1, 0};
+        VECTOR3 nodeVec = crossp(equatorNormal, h_t_unit);
+        double nodeVecMag = length(nodeVec);
+        if (nodeVecMag > 1e-10) {
+            nodeVec = nodeVec / nodeVecMag;
+            pa.targetLAN = atan2(nodeVec.z, nodeVec.x) * DEG;
+            if (pa.targetLAN < 0) pa.targetLAN += 360.0;
+        } else {
+            pa.targetLAN = 0;  // Equatorial orbit
+        }
     }
 
     // Relative inclination = angle between orbital plane normals
