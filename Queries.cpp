@@ -746,10 +746,10 @@ static void GetNextDockAction(const DockAlignData& d, char* action, size_t actio
     }
 
     // Step 2: Then fix V axis (until |vDisp| < 1m)
-    // OPPOSITE signs = moving toward zero, SAME signs = moving away
+    // SAME signs = moving toward zero (positive vel decreases positive pos)
     if (fabs(d.vDisp) > 1.0) {
-        bool movingCorrectWay = (d.vDisp > 0 && d.vY < -0.05) || (d.vDisp < 0 && d.vY > 0.05);
-        bool movingWrongWay = (d.vDisp > 0 && d.vY > 0.1) || (d.vDisp < 0 && d.vY < -0.1);
+        bool movingCorrectWay = (d.vDisp > 0 && d.vY > 0.05) || (d.vDisp < 0 && d.vY < -0.05);
+        bool movingWrongWay = (d.vDisp > 0 && d.vY < -0.1) || (d.vDisp < 0 && d.vY > 0.1);
 
         if (movingWrongWay) {
             snprintf(action, actionLen, "STOP DRIFT V %+.1fm Vy%+.1f (trans)", d.vDisp, d.vY);
@@ -758,34 +758,34 @@ static void GetNextDockAction(const DockAlignData& d, char* action, size_t actio
             snprintf(action, actionLen, "COAST V %+.1fm Vy%+.1f (trans)", d.vDisp, d.vY);
             snprintf(key, keyLen, "wait");
         } else {
-            // pos>0 needs neg vel (Num8=down), pos<0 needs pos vel (Num2=up)
+            // pos>0 needs pos vel (Num2=up), pos<0 needs neg vel (Num8=down)
             snprintf(action, actionLen, "MOVE V %+.1fm (trans mode)", d.vDisp);
-            snprintf(key, keyLen, d.vDisp > 0 ? "Num8" : "Num2");
+            snprintf(key, keyLen, d.vDisp > 0 ? "Num2" : "Num8");
         }
         return;
     }
 
     // Fine position - same logic but tighter thresholds
-    // OPPOSITE signs = moving toward zero, SAME signs = moving away
+    // SAME signs = moving toward zero (positive vel decreases positive pos)
     // Keys: Left=Num1, Right=Num3, Up=Num2, Down=Num8
     if (fabs(d.hDisp) > POS_FINE || fabs(d.vDisp) > POS_FINE) {
         if (fabs(d.hDisp) >= fabs(d.vDisp)) {
-            bool movingCorrectWay = (d.hDisp > 0 && d.vX < -0.02) || (d.hDisp < 0 && d.vX > 0.02);
+            bool movingCorrectWay = (d.hDisp > 0 && d.vX > 0.02) || (d.hDisp < 0 && d.vX < -0.02);
             if (movingCorrectWay) {
                 snprintf(action, actionLen, "COAST H %+.2fm (trans)", d.hDisp);
                 snprintf(key, keyLen, "wait");
             } else {
                 snprintf(action, actionLen, "Fine H %+.2fm (trans)", d.hDisp);
-                snprintf(key, keyLen, d.hDisp > 0 ? "Num1" : "Num3");
+                snprintf(key, keyLen, d.hDisp > 0 ? "Num3" : "Num1");
             }
         } else {
-            bool movingCorrectWay = (d.vDisp > 0 && d.vY < -0.02) || (d.vDisp < 0 && d.vY > 0.02);
+            bool movingCorrectWay = (d.vDisp > 0 && d.vY > 0.02) || (d.vDisp < 0 && d.vY < -0.02);
             if (movingCorrectWay) {
                 snprintf(action, actionLen, "COAST V %+.2fm (trans)", d.vDisp);
                 snprintf(key, keyLen, "wait");
             } else {
                 snprintf(action, actionLen, "Fine V %+.2fm (trans)", d.vDisp);
-                snprintf(key, keyLen, d.vDisp > 0 ? "Num8" : "Num2");
+                snprintf(key, keyLen, d.vDisp > 0 ? "Num2" : "Num8");
             }
         }
         return;
