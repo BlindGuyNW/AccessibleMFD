@@ -727,10 +727,10 @@ void PrintAlign(const char* arg) {
     printf("\nAscending Node:  %.1f deg  TtAN %s\n", pa.angleToAN, timeAN);
     printf("Descending Node: %.1f deg  TtDN %s\n", pa.angleToDN, timeDN);
 
-    // Burn recommendation
+    // Burn recommendation: NML- at ascending node, NML+ at descending node
     printf("\nBurn at %s (%s)\n",
         pa.burnAtAN ? "AN" : "DN",
-        pa.burnAtAN ? "NML+" : "NML-");
+        pa.burnAtAN ? "NML-" : "NML+");
 
     printf("  dV: %.1f m/s\n", pa.burnDV);
 

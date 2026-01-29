@@ -399,10 +399,11 @@ PlaneAlignData CalcPlaneAlign(VESSEL* v, OBJHANDLE hTarget, OBJHANDLE hRef, Alig
         return pa;
     }
 
-    // Normalize node direction (this points to descending node from vessel's perspective)
-    // Ascending node is where vessel crosses from below to above target plane
-    VECTOR3 anDir = nodeDir / nodeDirMag;  // Points to ascending node
-    VECTOR3 dnDir = anDir * -1.0;          // Points to descending node
+    // h_v × h_t points to the ascending node (where the target crosses
+    // from below to above the vessel's orbital plane). This matches
+    // Orbiter's Align Planes MFD convention.
+    VECTOR3 anDir = nodeDir / nodeDirMag;
+    VECTOR3 dnDir = anDir * -1.0;
 
     // Calculate angle from current position to each node
     VECTOR3 posUnit = relPos_v / length(relPos_v);

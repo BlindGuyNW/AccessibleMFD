@@ -66,7 +66,7 @@ struct PlaneAlignData {
     double timeToDN;       // Time to descending node [s]
 
     // Burn parameters
-    bool burnAtAN;         // true = NML+ at AN, false = NML- at DN
+    bool burnAtAN;         // true = burn at AN (NML-), false = burn at DN (NML+)
     double burnDV;         // Required delta-V [m/s]
     double burnTime;       // Estimated burn duration [s]
     double timeToBurn;     // Time to start burn [s]
