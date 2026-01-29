@@ -1394,14 +1394,15 @@ void PrintFuel(const char* arg) {
         char name[64];
         BuildTankName(flags, tankIdx, name, sizeof(name));
 
-        // Find best vacuum ISP from thrusters using this tank
+        // Find best vacuum ISP from rocket thrusters using this tank
+        // Skip air-breathing engines (e.g. scramjets) which have near-zero vacuum ISP
         double bestIsp = 0;
         DWORD nTh = v->GetThrusterCount();
         for (DWORD i = 0; i < nTh; i++) {
             THRUSTER_HANDLE th = v->GetThrusterHandleByIndex(i);
             if (v->GetThrusterResource(th) == ph) {
                 double isp = v->GetThrusterIsp0(th);
-                if (isp > bestIsp) bestIsp = isp;
+                if (isp > 10.0 && isp > bestIsp) bestIsp = isp;
             }
         }
 
@@ -1456,14 +1457,14 @@ void PrintFuel(const char* arg) {
         totalMass += mass;
         totalMax += maxMass;
 
-        // Find best vacuum ISP for delta-V
+        // Find best vacuum ISP for delta-V (skip air-breathing engines)
         double bestIsp = 0;
         DWORD nTh = v->GetThrusterCount();
         for (DWORD j = 0; j < nTh; j++) {
             THRUSTER_HANDLE th = v->GetThrusterHandleByIndex(j);
             if (v->GetThrusterResource(th) == ph) {
                 double isp = v->GetThrusterIsp0(th);
-                if (isp > bestIsp) bestIsp = isp;
+                if (isp > 10.0 && isp > bestIsp) bestIsp = isp;
             }
         }
 
