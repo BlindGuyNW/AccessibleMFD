@@ -16,7 +16,7 @@ void PrintOrbit();
 void PrintFlight();
 void PrintMFD();
 void PrintDock(const char* arg);
-void PrintFuel();
+void PrintFuel(const char* arg);
 void PrintMap(const char* arg);
 void PrintSurface(const char* arg);
 void PrintAll();

@@ -27,7 +27,7 @@ static void WrapOrbit(const char*) { PrintOrbit(); }
 static void WrapFlight(const char*) { PrintFlight(); }
 static void WrapMFD(const char*) { PrintMFD(); }
 static void WrapDock(const char* arg) { PrintDock(arg); }
-static void WrapFuel(const char*) { PrintFuel(); }
+
 static void WrapAll(const char*) { PrintAll(); }
 static void WrapHelp(const char*) { PrintHelp(); }
 
@@ -39,7 +39,7 @@ static Command s_commands[] = {
     {"flight",   "f",    false, PrintFlight, NULL},
     {"mfd",      "m",    false, PrintMFD, NULL},
     {"dock",     "d",    true,  NULL, WrapDock},
-    {"fuel",     NULL,   false, PrintFuel, NULL},
+    {"fuel",     "fu",   true,  NULL, PrintFuel},
     {"all",      "a",    false, PrintAll, NULL},
 
     // Data queries (with args)

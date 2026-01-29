@@ -774,7 +774,8 @@ void PrintHelp() {
     printf("    d align  - Auto-align attitude only\n");
     printf("    d watch  - Continuous updates to clipboard\n");
     printf("    d ports  - List our ports and target ports\n");
-    printf("  fuel       - Fuel status\n");
+    printf("  fu, fuel   - Fuel status (per tank, dV, flow)\n");
+    printf("    fuel <n> - Detailed info for tank n\n");
     printf("  map        - Position, altitude, ground track\n");
     printf("  map bases  - List bases with distance/bearing\n");
     printf("  a, all     - All data\n");

@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <math.h>
 
 // Copy text to Windows clipboard
 static void CopyToClipboard(const char* text) {
@@ -1288,29 +1289,202 @@ void PrintDock(const char* arg) {
     }
 }
 
-void PrintFuel() {
+// Thruster group flags for tank classification
+enum TankFlags {
+    TANK_MAIN  = 0x01,
+    TANK_RETRO = 0x02,
+    TANK_HOVER = 0x04,
+    TANK_RCS   = 0x08
+};
+
+// Check if any thruster in a standard group uses this propellant handle
+static bool GroupUsesTank(VESSEL* v, THGROUP_TYPE grp, PROPELLANT_HANDLE ph) {
+    DWORD n = v->GetGroupThrusterCount(grp);
+    for (DWORD i = 0; i < n; i++) {
+        THRUSTER_HANDLE th = v->GetGroupThruster(grp, i);
+        if (th && v->GetThrusterResource(th) == ph) return true;
+    }
+    return false;
+}
+
+// Classify a propellant tank by scanning which thruster groups use it
+static int ClassifyTank(VESSEL* v, PROPELLANT_HANDLE ph) {
+    int flags = 0;
+    if (GroupUsesTank(v, THGROUP_MAIN, ph))  flags |= TANK_MAIN;
+    if (GroupUsesTank(v, THGROUP_RETRO, ph)) flags |= TANK_RETRO;
+    if (GroupUsesTank(v, THGROUP_HOVER, ph)) flags |= TANK_HOVER;
+
+    // Check any RCS attitude group
+    static const THGROUP_TYPE rcsGroups[] = {
+        THGROUP_ATT_PITCHUP, THGROUP_ATT_PITCHDOWN,
+        THGROUP_ATT_YAWLEFT, THGROUP_ATT_YAWRIGHT,
+        THGROUP_ATT_BANKLEFT, THGROUP_ATT_BANKRIGHT,
+        THGROUP_ATT_UP, THGROUP_ATT_DOWN,
+        THGROUP_ATT_LEFT, THGROUP_ATT_RIGHT,
+        THGROUP_ATT_FORWARD, THGROUP_ATT_BACK
+    };
+    for (int i = 0; i < 12; i++) {
+        if (GroupUsesTank(v, rcsGroups[i], ph)) {
+            flags |= TANK_RCS;
+            break;
+        }
+    }
+    return flags;
+}
+
+// Build a human-readable tank name from classification flags
+static void BuildTankName(int flags, int index, char* buf, int len) {
+    if (flags == 0) {
+        snprintf(buf, len, "Tank %d", index);
+        return;
+    }
+    buf[0] = '\0';
+    if (flags & TANK_MAIN)  strncat(buf, "Main", len - strlen(buf) - 1);
+    if (flags & TANK_RETRO) {
+        if (buf[0]) strncat(buf, "/", len - strlen(buf) - 1);
+        strncat(buf, "Retro", len - strlen(buf) - 1);
+    }
+    if (flags & TANK_HOVER) {
+        if (buf[0]) strncat(buf, "/", len - strlen(buf) - 1);
+        strncat(buf, "Hover", len - strlen(buf) - 1);
+    }
+    if (flags & TANK_RCS) {
+        if (buf[0]) strncat(buf, "/", len - strlen(buf) - 1);
+        strncat(buf, "RCS", len - strlen(buf) - 1);
+    }
+}
+
+void PrintFuel(const char* arg) {
     VESSEL* v = oapiGetFocusInterface();
     if (!v) {
         printf("No vessel\n");
         return;
     }
 
-    double fuel = v->GetFuelMass();
-    double maxFuel = v->GetMaxFuelMass();
-
-    if (maxFuel <= 0) {
-        printf("No fuel tank\n");
+    DWORD nTanks = v->GetPropellantCount();
+    if (nTanks == 0) {
+        printf("No fuel tanks\n");
         return;
     }
 
-    double pct = (fuel / maxFuel) * 100.0;
+    double vesselMass = v->GetMass();
 
-    printf("Fuel: %.1f / %.1f kg (%.1f%%)\n", fuel, maxFuel, pct);
+    // Check if a specific tank index was requested
+    int tankIdx = -1;
+    if (arg && arg[0] != '\0') {
+        char* endptr;
+        long val = strtol(arg, &endptr, 10);
+        if (*endptr == '\0' && val >= 0 && val < (long)nTanks) {
+            tankIdx = (int)val;
+        } else {
+            printf("Invalid tank index: %s (vessel has %u tanks)\n", arg, nTanks);
+            return;
+        }
+    }
 
-    // Show total propellant if different from main tank
-    double total = v->GetTotalPropellantMass();
-    if (total > maxFuel * 1.01) {  // More than 1% difference suggests multiple tanks
-        printf("Total Propellant: %.1f kg\n", total);
+    // Detailed single-tank view
+    if (tankIdx >= 0) {
+        PROPELLANT_HANDLE ph = v->GetPropellantHandleByIndex(tankIdx);
+        double mass = v->GetPropellantMass(ph);
+        double maxMass = v->GetPropellantMaxMass(ph);
+        double flow = v->GetPropellantFlowrate(ph);
+        double pct = (maxMass > 0) ? (mass / maxMass) * 100.0 : 0.0;
+
+        int flags = ClassifyTank(v, ph);
+        char name[64];
+        BuildTankName(flags, tankIdx, name, sizeof(name));
+
+        // Find best vacuum ISP from thrusters using this tank
+        double bestIsp = 0;
+        DWORD nTh = v->GetThrusterCount();
+        for (DWORD i = 0; i < nTh; i++) {
+            THRUSTER_HANDLE th = v->GetThrusterHandleByIndex(i);
+            if (v->GetThrusterResource(th) == ph) {
+                double isp = v->GetThrusterIsp0(th);
+                if (isp > bestIsp) bestIsp = isp;
+            }
+        }
+
+        printf("=== %s (Tank %d) ===\n", name, tankIdx);
+        printf("Mass: %.1f / %.1f kg\n", mass, maxMass);
+        printf("Level: %.1f%%\n", pct);
+
+        // Delta-V
+        if (bestIsp > 0 && vesselMass > mass) {
+            double dv = bestIsp * log(vesselMass / (vesselMass - mass));
+            printf("Delta-V: %.0f m/s\n", dv);
+        } else {
+            printf("Delta-V: N/A\n");
+        }
+
+        // ISP
+        if (bestIsp > 0)
+            printf("ISP: %.0f m/s (vacuum)\n", bestIsp);
+        else
+            printf("ISP: N/A\n");
+
+        // Flow rate
+        if (fabs(flow) > 0.001) {
+            printf("Flow: %.2f kg/s\n", fabs(flow));
+            // Time to empty
+            if (mass > 0 && fabs(flow) > 0.001) {
+                double tte = mass / fabs(flow);
+                char timeBuf[64];
+                FormatTime(tte, timeBuf, sizeof(timeBuf));
+                printf("Time to empty: %s\n", timeBuf);
+            }
+        } else {
+            printf("Flow: idle\n");
+        }
+        return;
+    }
+
+    // Summary view: all tanks
+    double totalMass = 0, totalMax = 0;
+
+    for (DWORD i = 0; i < nTanks; i++) {
+        PROPELLANT_HANDLE ph = v->GetPropellantHandleByIndex(i);
+        double mass = v->GetPropellantMass(ph);
+        double maxMass = v->GetPropellantMaxMass(ph);
+        double flow = v->GetPropellantFlowrate(ph);
+        double pct = (maxMass > 0) ? (mass / maxMass) * 100.0 : 0.0;
+
+        int flags = ClassifyTank(v, ph);
+        char name[64];
+        BuildTankName(flags, i, name, sizeof(name));
+
+        totalMass += mass;
+        totalMax += maxMass;
+
+        // Find best vacuum ISP for delta-V
+        double bestIsp = 0;
+        DWORD nTh = v->GetThrusterCount();
+        for (DWORD j = 0; j < nTh; j++) {
+            THRUSTER_HANDLE th = v->GetThrusterHandleByIndex(j);
+            if (v->GetThrusterResource(th) == ph) {
+                double isp = v->GetThrusterIsp0(th);
+                if (isp > bestIsp) bestIsp = isp;
+            }
+        }
+
+        // Build output line
+        printf("%s: %.0f/%.0f kg (%.0f%%)", name, mass, maxMass, pct);
+
+        if (bestIsp > 0 && vesselMass > mass) {
+            double dv = bestIsp * log(vesselMass / (vesselMass - mass));
+            printf(" dV=%.0f m/s", dv);
+        }
+
+        if (fabs(flow) > 0.001)
+            printf(" [%.2f kg/s]", fabs(flow));
+
+        printf("\n");
+    }
+
+    // Total line if multiple tanks
+    if (nTanks > 1) {
+        double totalPct = (totalMax > 0) ? (totalMass / totalMax) * 100.0 : 0.0;
+        printf("Total: %.0f/%.0f kg (%.0f%%)\n", totalMass, totalMax, totalPct);
     }
 }
 
@@ -1550,6 +1724,8 @@ void PrintAll() {
     PrintFlight();
     printf("=== MFD ===\n");
     PrintMFD();
+    printf("=== FUEL ===\n");
+    PrintFuel("");
     printf("=== DOCK ===\n");
     PrintDock("");
 }
