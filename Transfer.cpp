@@ -769,6 +769,7 @@ void PrintHelp() {
     printf("    sf atm   - Atmospheric conditions\n");
     printf("    sf forces - Lift/drag forces\n");
     printf("  m, mfd     - MFD modes\n");
+    printf("  cp, cockpit - Cockpit mode (glass/2D panel/virtual)\n");
     printf("  d, dock    - Docking guidance\n");
     printf("    d auto [n] - Auto-dock to target port n (default: IDS port)\n");
     printf("    d align  - Auto-align attitude only\n");

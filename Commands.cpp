@@ -40,6 +40,7 @@ static Command s_commands[] = {
     {"mfd",      "m",    false, PrintMFD, NULL},
     {"dock",     "d",    true,  NULL, WrapDock},
     {"fuel",     "fu",   true,  NULL, PrintFuel},
+    {"cockpit",  "cp",   false, PrintCockpit, NULL},
     {"all",      "a",    false, PrintAll, NULL},
 
     // Data queries (with args)

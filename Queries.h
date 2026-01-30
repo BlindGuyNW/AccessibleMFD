@@ -20,5 +20,6 @@ void PrintFuel(const char* arg);
 void PrintMap(const char* arg);
 void PrintSurface(const char* arg);
 void PrintAll();
+void PrintCockpit();
 
 #endif // QUERIES_H

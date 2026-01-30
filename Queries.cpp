@@ -276,6 +276,20 @@ const char* GetMFDModeName(int mode) {
     }
 }
 
+void PrintCockpit() {
+    int mode = oapiCockpitMode();
+    const char* name;
+    switch (mode) {
+    case COCKPIT_GENERIC:  name = "Glass cockpit"; break;
+    case COCKPIT_PANELS:   name = "2D panel"; break;
+    case COCKPIT_VIRTUAL:  name = "Virtual cockpit (3D)"; break;
+    default:               name = "Unknown"; break;
+    }
+    printf("Cockpit mode: %s\n", name);
+    if (!oapiCameraInternal())
+        printf("Note: External camera active\n");
+}
+
 void PrintVessel() {
     VESSEL* v = oapiGetFocusInterface();
     if (!v) {
