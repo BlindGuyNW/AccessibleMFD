@@ -10,6 +10,9 @@
 .vs/
 *.vcxproj.user
 
+# Claude Code
+.claude/
+
 # CMake / Build
 /build/
 CMakeFiles/
