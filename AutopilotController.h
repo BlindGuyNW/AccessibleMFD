@@ -10,6 +10,7 @@ enum AutopilotState {
     AP_IDLE,           // Not active
     AP_PRELAUNCH,      // Armed, counting down
     AP_LIFTOFF,        // Vertical climb (first 10 seconds)
+    AP_DEPARTURE_TURN, // Coordinated turn to target azimuth
     AP_PITCHOVER,      // Gravity turn (pitch program)
     AP_COAST,          // Coasting to apoapsis
     AP_CIRCULARIZE,    // Circularization burn at apoapsis
@@ -33,7 +34,7 @@ public:
     AutopilotController();
 
     // Start launch to target altitude (km)
-    bool StartLaunch(double targetAltKm);
+    bool StartLaunch(double targetAltKm, double azimuthDeg = 90.0);
 
     // Abort launch immediately
     void Abort();

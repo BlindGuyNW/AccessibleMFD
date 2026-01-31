@@ -14,11 +14,13 @@ void PrintLaunch(const char* arg) {
 
         if (!g_autopilotController.IsActive()) {
             printf("\nUsage:\n");
-            printf("  launch <altitude>  - Launch to orbit (km)\n");
-            printf("  launch abort       - Abort autopilot\n");
+            printf("  launch <altitude> [azimuth]  - Launch to orbit\n");
+            printf("  launch abort                 - Abort autopilot\n");
             printf("\nExamples:\n");
-            printf("  launch 200   - Launch to 200 km circular orbit\n");
-            printf("  launch 300   - Launch to 300 km circular orbit\n");
+            printf("  launch 200      - 200 km orbit, heading 90 (east)\n");
+            printf("  launch 200 42   - 200 km orbit, heading 42 deg\n");
+            printf("  launch 300 270  - 300 km orbit, heading 270 (west)\n");
+            printf("\nAzimuth: 0=north, 90=east, 180=south, 270=west\n");
         }
         return;
     }
@@ -37,14 +39,14 @@ void PrintLaunch(const char* arg) {
         return;
     }
 
-    // Parse altitude (supports formats: "200", "200k", "200km")
+    // Parse altitude (supports formats: "200", "200k", "200km") and optional azimuth
     double altitude = 0;
     char suffix[16] = "";
 
     int parsed = sscanf(arg, "%lf%15s", &altitude, suffix);
     if (parsed < 1 || altitude <= 0) {
-        printf("Invalid altitude. Usage: launch <altitude_km>\n");
-        printf("Examples: launch 200, launch 300\n");
+        printf("Invalid altitude. Usage: launch <altitude_km> [azimuth]\n");
+        printf("Examples: launch 200, launch 200 42\n");
         return;
     }
 
@@ -56,6 +58,23 @@ void PrintLaunch(const char* arg) {
         return;
     }
 
+    // Parse optional azimuth: scan past the first token to find a second number
+    double azimuth = 90.0;  // Default: east
+    const char* p = arg;
+    // Skip leading whitespace
+    while (*p == ' ' || *p == '\t') p++;
+    // Skip first token (altitude + optional suffix)
+    while (*p && *p != ' ' && *p != '\t') p++;
+    // Skip whitespace between tokens
+    while (*p == ' ' || *p == '\t') p++;
+    // If there's more text, try to parse azimuth
+    if (*p) {
+        if (sscanf(p, "%lf", &azimuth) != 1) {
+            printf("Invalid azimuth. Usage: launch <altitude_km> [azimuth]\n");
+            return;
+        }
+    }
+
     // Start launch
-    g_autopilotController.StartLaunch(altitude);
+    g_autopilotController.StartLaunch(altitude, azimuth);
 }
