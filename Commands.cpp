@@ -25,7 +25,6 @@ struct Command {
 static void WrapVessel(const char*) { PrintVessel(); }
 static void WrapOrbit(const char*) { PrintOrbit(); }
 static void WrapFlight(const char*) { PrintFlight(); }
-static void WrapMFD(const char*) { PrintMFD(); }
 static void WrapDock(const char* arg) { PrintDock(arg); }
 
 static void WrapAll(const char*) { PrintAll(); }
@@ -37,9 +36,11 @@ static Command s_commands[] = {
     {"vessel",   "v",    false, PrintVessel, NULL},
     {"orbit",    "o",    false, PrintOrbit, NULL},
     {"flight",   "f",    false, PrintFlight, NULL},
-    {"mfd",      "m",    false, PrintMFD, NULL},
+    {"mfd",      "m",    true,  NULL, PrintMFD},
     {"dock",     "d",    true,  NULL, WrapDock},
     {"fuel",     "fu",   true,  NULL, PrintFuel},
+    {"buttons",  "btn",  true, NULL, PrintButtons},
+    {"press",    NULL,   true, NULL, PressButton},
     {"cockpit",  "cp",   false, PrintCockpit, NULL},
     {"all",      "a",    false, PrintAll, NULL},
 

@@ -2,6 +2,7 @@
 
 #include "AutopilotModule.h"
 #include "AutopilotController.h"
+#include "MfdCapture.h"
 
 AutopilotModule::AutopilotModule(HINSTANCE hDLL)
     : oapi::Module(hDLL)
@@ -19,6 +20,9 @@ void AutopilotModule::clbkSimulationEnd() {
 }
 
 void AutopilotModule::clbkPreStep(double simt, double simdt, double mjd) {
+    // Snapshot MFD text from previous frame and prepare for next
+    MfdCaptureFrameStart();
+
     // Update autopilot every frame
     g_autopilotController.Update(simt, simdt);
 }

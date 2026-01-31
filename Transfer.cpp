@@ -768,7 +768,12 @@ void PrintHelp() {
     printf("    sf alt   - Altitude/speed/attitude details\n");
     printf("    sf atm   - Atmospheric conditions\n");
     printf("    sf forces - Lift/drag forces\n");
-    printf("  m, mfd     - MFD modes\n");
+    printf("  m, mfd     - MFD modes and capture status\n");
+    printf("    mfd l    - Read left MFD text\n");
+    printf("    mfd r    - Read right MFD text\n");
+    printf("    mfd <n>  - Read MFD slot n (0-11)\n");
+    printf("  btn, buttons <l|r|n> - MFD button labels\n");
+    printf("  press <l|r|n> <btn#> - Press MFD button (0-11)\n");
     printf("  cp, cockpit - Cockpit mode (glass/2D panel/virtual)\n");
     printf("  d, dock    - Docking guidance\n");
     printf("    d auto [n] - Auto-dock to target port n (default: IDS port)\n");

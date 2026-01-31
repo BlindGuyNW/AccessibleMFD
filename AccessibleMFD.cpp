@@ -20,6 +20,7 @@
 #include "Commands.h"
 #include "AutopilotModule.h"
 #include "AutopilotController.h"
+#include "MfdCapture.h"
 
 static HINSTANCE g_hInst = NULL;
 static DWORD g_dwCmd = 0;
@@ -47,6 +48,9 @@ DLLCLBK void InitModule(HINSTANCE hDLL) {
     // Register autopilot module for per-frame callbacks
     g_pAutopilotModule = new AutopilotModule(hDLL);
     oapiRegisterModule(g_pAutopilotModule);
+
+    // Install MFD text capture hook
+    MfdCaptureInstall();
 }
 
 DLLCLBK void ExitModule(HINSTANCE hDLL) {
@@ -56,6 +60,9 @@ DLLCLBK void ExitModule(HINSTANCE hDLL) {
     if (g_autopilotController.IsActive()) {
         g_autopilotController.Abort();
     }
+
+    // Remove MFD text capture hook
+    MfdCaptureRemove();
 
     CloseConsole();
 

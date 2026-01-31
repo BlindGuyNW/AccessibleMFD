@@ -2,6 +2,7 @@
 
 #include "Queries.h"
 #include "Formatting.h"
+#include "MfdCapture.h"
 #include <windows.h>
 #include <conio.h>
 #include <stdio.h>
@@ -390,9 +391,126 @@ void PrintFlight() {
     printf("Bank: %.1f deg\n", v->GetBank() * DEG);
 }
 
-void PrintMFD() {
+// Helper: Print captured MFD text entries sorted by (y, x) and grouped into lines
+static void PrintMfdText(const MfdSlotData& slot) {
+    if (slot.entryCount == 0) {
+        printf("  (no text captured)\n");
+        return;
+    }
+
+    // Sort entries by (y, x) using simple insertion sort (small N)
+    MfdTextEntry sorted[64];
+    int count = slot.entryCount;
+    if (count > 64) count = 64;
+    memcpy(sorted, slot.entries, count * sizeof(MfdTextEntry));
+
+    for (int i = 1; i < count; i++) {
+        MfdTextEntry tmp = sorted[i];
+        int j = i - 1;
+        while (j >= 0 && (sorted[j].y > tmp.y ||
+               (sorted[j].y == tmp.y && sorted[j].x > tmp.x))) {
+            sorted[j + 1] = sorted[j];
+            j--;
+        }
+        sorted[j + 1] = tmp;
+    }
+
+    // Group into lines by Y-proximity (8px tolerance)
+    const int Y_TOLERANCE = 8;
+    int lineY = sorted[0].y;
+    bool firstOnLine = true;
+
+    for (int i = 0; i < count; i++) {
+        if (i > 0 && abs(sorted[i].y - lineY) > Y_TOLERANCE) {
+            // New line
+            printf("\n");
+            lineY = sorted[i].y;
+            firstOnLine = true;
+        }
+
+        if (!firstOnLine)
+            printf("  ");  // space between fragments on same line
+        printf("%s", sorted[i].text);
+        firstOnLine = false;
+    }
+    printf("\n");
+}
+
+void PrintMFD(const char* arg) {
+    // Show mode names for left/right
     printf("Left: %s\n", GetMFDModeName(oapiGetMFDMode(MFD_LEFT)));
     printf("Right: %s\n", GetMFDModeName(oapiGetMFDMode(MFD_RIGHT)));
+
+    // No arg: just mode names plus capture status
+    if (!arg || arg[0] == '\0') {
+        DWORD age = MfdCaptureGetFrameAge();
+        if (age == MAXDWORD)
+            printf("Capture: not active\n");
+        else if (age > 2000)
+            printf("Capture: stale (%lu ms ago)\n", age);
+        else
+            printf("Capture: active (frame %lu ms ago)\n", age);
+        return;
+    }
+
+    // Diagnostic subcommand
+    if (_stricmp(arg, "diag") == 0) {
+        MfdCaptureDiag();
+        return;
+    }
+
+    // Determine which MFD slot to display
+    int requestedIndex = -1;
+
+    if (_stricmp(arg, "l") == 0 || _stricmp(arg, "left") == 0) {
+        requestedIndex = MFD_LEFT;
+    } else if (_stricmp(arg, "r") == 0 || _stricmp(arg, "right") == 0) {
+        requestedIndex = MFD_RIGHT;
+    } else {
+        // Try numeric index
+        char* endptr;
+        long val = strtol(arg, &endptr, 10);
+        if (*endptr == '\0' && val >= 0 && val < 12) {
+            requestedIndex = (int)val;
+        } else {
+            printf("Usage: mfd [l|r|0-11]\n");
+            return;
+        }
+    }
+
+    // Check if the requested MFD is active
+    int mode = oapiGetMFDMode(requestedIndex);
+    if (mode == MFD_NONE) {
+        printf("MFD %d is off\n", requestedIndex);
+        return;
+    }
+
+    // Check frame age
+    DWORD age = MfdCaptureGetFrameAge();
+    if (age == MAXDWORD) {
+        printf("No capture data available yet\n");
+        return;
+    }
+    if (age > 2000) {
+        printf("Warning: capture data is stale (%lu ms old)\n", age);
+        printf("(MFDs may not render in external camera view)\n");
+    }
+
+    // Get frame data
+    MfdFrameData frame;
+    MfdCaptureGetFrame(&frame);
+
+    // Find the requested MFD index in the frame
+    for (int i = 0; i < frame.slotCount; i++) {
+        if (frame.slots[i].mfdIndex == requestedIndex) {
+            printf("\n=== MFD %d: %s ===\n", requestedIndex,
+                   GetMFDModeName(frame.slots[i].modeId));
+            PrintMfdText(frame.slots[i]);
+            return;
+        }
+    }
+
+    printf("MFD %d: %s (no captured text)\n", requestedIndex, GetMFDModeName(mode));
 }
 
 // Helper: Print dock port status list
@@ -1730,6 +1848,109 @@ void PrintSurface(const char* arg) {
     printf("Options: alt, atm, forces\n");
 }
 
+// Helper: Parse MFD side argument to an MFD index
+// Returns -1 on error
+static int ParseMfdSide(const char* arg) {
+    if (!arg || arg[0] == '\0') return -1;
+
+    if (_stricmp(arg, "l") == 0 || _stricmp(arg, "left") == 0)
+        return MFD_LEFT;
+    if (_stricmp(arg, "r") == 0 || _stricmp(arg, "right") == 0)
+        return MFD_RIGHT;
+
+    char* endptr;
+    long val = strtol(arg, &endptr, 10);
+    if (*endptr == '\0' && val >= 0 && val < 12)
+        return (int)val;
+
+    return -1;
+}
+
+void PrintButtons(const char* arg) {
+    int mfdIndex = ParseMfdSide(arg);
+    if (mfdIndex < 0) {
+        printf("Usage: buttons <l|r|0-11>\n");
+        return;
+    }
+
+    int mode = oapiGetMFDMode(mfdIndex);
+    if (mode == MFD_NONE) {
+        printf("MFD %d is off\n", mfdIndex);
+        return;
+    }
+
+    printf("MFD %d (%s) buttons:\n", mfdIndex, GetMFDModeName(mode));
+
+    // Left column (0-5)
+    for (int bt = 0; bt < 6; bt++) {
+        const char* label = oapiMFDButtonLabel(mfdIndex, bt);
+        if (label)
+            printf("  [%d] %s", bt, label);
+    }
+    printf("\n");
+
+    // Right column (6-11)
+    for (int bt = 6; bt < 12; bt++) {
+        const char* label = oapiMFDButtonLabel(mfdIndex, bt);
+        if (label)
+            printf("  [%d] %s", bt, label);
+    }
+    printf("\n");
+}
+
+void PressButton(const char* arg) {
+    if (!arg || arg[0] == '\0') {
+        printf("Usage: press <l|r|0-11> <button#>\n");
+        return;
+    }
+
+    // Parse first token as MFD side
+    char sideStr[16] = "";
+    const char* rest = arg;
+    int i = 0;
+    while (*rest && *rest != ' ' && i < 15) {
+        sideStr[i++] = *rest++;
+    }
+    sideStr[i] = '\0';
+    while (*rest == ' ') rest++;
+
+    int mfdIndex = ParseMfdSide(sideStr);
+    if (mfdIndex < 0) {
+        printf("Usage: press <l|r|0-11> <button#>\n");
+        return;
+    }
+
+    // Parse second token as button number
+    if (*rest == '\0') {
+        printf("Usage: press <l|r|0-11> <button#>\n");
+        return;
+    }
+
+    char* endptr;
+    long bt = strtol(rest, &endptr, 10);
+    if (*endptr != '\0' || bt < 0 || bt > 11) {
+        printf("Invalid button number: %s (0-11)\n", rest);
+        return;
+    }
+
+    int mode = oapiGetMFDMode(mfdIndex);
+    if (mode == MFD_NONE) {
+        printf("MFD %d is off\n", mfdIndex);
+        return;
+    }
+
+    const char* label = oapiMFDButtonLabel(mfdIndex, (int)bt);
+    bool ok = oapiProcessMFDButton(mfdIndex, (int)bt, PANEL_MOUSE_LBDOWN);
+
+    if (ok)
+        printf("Pressed [%ld] %s on MFD %d\n", bt, label ? label : "(?)", mfdIndex);
+    else
+        printf("Button [%ld] not handled by MFD %d\n", bt, mfdIndex);
+
+    // Show updated labels
+    PrintButtons(sideStr);
+}
+
 void PrintAll() {
     printf("=== VESSEL ===\n");
     PrintVessel();
@@ -1738,7 +1959,7 @@ void PrintAll() {
     printf("=== FLIGHT ===\n");
     PrintFlight();
     printf("=== MFD ===\n");
-    PrintMFD();
+    PrintMFD("");
     printf("=== FUEL ===\n");
     PrintFuel("");
     printf("=== DOCK ===\n");

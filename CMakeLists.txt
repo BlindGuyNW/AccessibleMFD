@@ -9,6 +9,17 @@ cmake_minimum_required(VERSION 3.16)
 project(AccessibleMFD LANGUAGES CXX)
 
 # =============================================================================
+# MinHook - lightweight API hooking library (BSD license)
+# =============================================================================
+include(FetchContent)
+FetchContent_Declare(
+    minhook
+    GIT_REPOSITORY https://github.com/TsudaKageyu/minhook.git
+    GIT_TAG        v1.3.4
+)
+FetchContent_MakeAvailable(minhook)
+
+# =============================================================================
 # Orbiter SDK Configuration
 # =============================================================================
 
@@ -86,6 +97,7 @@ set(Sources
     AutopilotModule.cpp
     AutopilotController.cpp
     Autopilot.cpp
+    MfdCapture.cpp
 )
 
 set(Headers
@@ -99,6 +111,7 @@ set(Headers
     AutopilotModule.h
     AutopilotController.h
     Autopilot.h
+    MfdCapture.h
 )
 
 # Collect SDK headers for IDE convenience
@@ -116,6 +129,7 @@ add_library(${PRJ} SHARED
 target_link_libraries(${PRJ} PRIVATE
     Orbiter
     Orbitersdk
+    minhook
 )
 
 # MSVC settings

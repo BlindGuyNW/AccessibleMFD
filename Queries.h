@@ -14,12 +14,14 @@ const char* GetMFDModeName(int mode);
 void PrintVessel();
 void PrintOrbit();
 void PrintFlight();
-void PrintMFD();
+void PrintMFD(const char* arg);
 void PrintDock(const char* arg);
 void PrintFuel(const char* arg);
 void PrintMap(const char* arg);
 void PrintSurface(const char* arg);
 void PrintAll();
 void PrintCockpit();
+void PrintButtons(const char* arg);
+void PressButton(const char* arg);
 
 #endif // QUERIES_H
