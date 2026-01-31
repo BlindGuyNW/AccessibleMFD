@@ -1900,7 +1900,7 @@ void PrintButtons(const char* arg) {
 
 void PressButton(const char* arg) {
     if (!arg || arg[0] == '\0') {
-        printf("Usage: press <l|r|0-11> <button#>\n");
+        printf("Usage: press <l|r|0-11> <button#> [<seconds>s]\n");
         return;
     }
 
@@ -1916,21 +1916,41 @@ void PressButton(const char* arg) {
 
     int mfdIndex = ParseMfdSide(sideStr);
     if (mfdIndex < 0) {
-        printf("Usage: press <l|r|0-11> <button#>\n");
+        printf("Usage: press <l|r|0-11> <button#> [<seconds>s]\n");
         return;
     }
 
     // Parse second token as button number
     if (*rest == '\0') {
-        printf("Usage: press <l|r|0-11> <button#>\n");
+        printf("Usage: press <l|r|0-11> <button#> [<seconds>s]\n");
         return;
     }
 
     char* endptr;
     long bt = strtol(rest, &endptr, 10);
-    if (*endptr != '\0' || bt < 0 || bt > 11) {
-        printf("Invalid button number: %s (0-11)\n", rest);
+    if (bt < 0 || bt > 11) {
+        printf("Invalid button number (0-11)\n");
         return;
+    }
+
+    // Skip spaces after button number
+    while (*endptr == ' ') endptr++;
+
+    // Parse optional hold duration
+    double holdSeconds = 0.0;
+    if (*endptr != '\0') {
+        char* durEnd;
+        holdSeconds = strtod(endptr, &durEnd);
+        if (*durEnd == 's' || *durEnd == 'S') durEnd++;
+        while (*durEnd == ' ') durEnd++;
+        if (*durEnd != '\0' || holdSeconds <= 0.0) {
+            printf("Invalid hold duration: %s\n", endptr);
+            return;
+        }
+        if (holdSeconds > 30.0) {
+            printf("Hold duration must be 30 seconds or less\n");
+            return;
+        }
     }
 
     int mode = oapiGetMFDMode(mfdIndex);
@@ -1940,15 +1960,52 @@ void PressButton(const char* arg) {
     }
 
     const char* label = oapiMFDButtonLabel(mfdIndex, (int)bt);
-    bool ok = oapiProcessMFDButton(mfdIndex, (int)bt, PANEL_MOUSE_LBDOWN);
 
-    if (ok)
-        printf("Pressed [%ld] %s on MFD %d\n", bt, label ? label : "(?)", mfdIndex);
-    else
-        printf("Button [%ld] not handled by MFD %d\n", bt, mfdIndex);
+    if (holdSeconds > 0.0) {
+        // Hold mode: LBDOWN, then LBPRESSED stream, then LBUP
+        bool ok = oapiProcessMFDButton(mfdIndex, (int)bt, PANEL_MOUSE_LBDOWN);
+        if (!ok) {
+            printf("Button [%ld] not handled by MFD %d\n", bt, mfdIndex);
+            return;
+        }
 
-    // Show updated labels
-    PrintButtons(sideStr);
+        printf("Holding [%ld] %s on MFD %d for %.1fs...\n",
+               bt, label ? label : "(?)", mfdIndex, holdSeconds);
+
+        DWORD startTick = GetTickCount();
+        DWORD holdMs = (DWORD)(holdSeconds * 1000.0);
+        DWORD lastReportTick = startTick;
+
+        while ((GetTickCount() - startTick) < holdMs) {
+            Sleep(50);
+            oapiProcessMFDButton(mfdIndex, (int)bt, PANEL_MOUSE_LBPRESSED);
+
+            // Print progress every second
+            DWORD now = GetTickCount();
+            if ((now - lastReportTick) >= 1000) {
+                double elapsed = (now - startTick) / 1000.0;
+                printf("  %.0fs...\n", elapsed);
+                lastReportTick = now;
+            }
+        }
+
+        oapiProcessMFDButton(mfdIndex, (int)bt, PANEL_MOUSE_LBUP);
+        printf("Released.\n");
+
+        // Show MFD text so user can see resulting value
+        PrintMFD(sideStr);
+    } else {
+        // Single press mode (existing behavior)
+        bool ok = oapiProcessMFDButton(mfdIndex, (int)bt, PANEL_MOUSE_LBDOWN);
+
+        if (ok)
+            printf("Pressed [%ld] %s on MFD %d\n", bt, label ? label : "(?)", mfdIndex);
+        else
+            printf("Button [%ld] not handled by MFD %d\n", bt, mfdIndex);
+
+        // Show updated labels
+        PrintButtons(sideStr);
+    }
 }
 
 void PrintAll() {
