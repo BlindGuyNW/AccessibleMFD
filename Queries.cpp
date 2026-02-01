@@ -3,6 +3,10 @@
 #include "Queries.h"
 #include "Formatting.h"
 #include "MfdCapture.h"
+#ifdef HAS_XRVESSELCTRL
+#include "XRVesselCtrl.h"
+#include "Controls.h"
+#endif
 #include <windows.h>
 #include <conio.h>
 #include <stdio.h>
@@ -1619,6 +1623,29 @@ void PrintFuel(const char* arg) {
         double totalPct = (totalMax > 0) ? (totalMass / totalMax) * 100.0 : 0.0;
         printf("Total: %.0f/%.0f kg (%.0f%%)\n", totalMass, totalMax, totalPct);
     }
+
+#ifdef HAS_XRVESSELCTRL
+    // Show XR-specific supply data if available
+    XRVesselCtrl* xr = GetXRVessel(true);
+    if (xr) {
+        XRSystemStatusRead status;
+        xr->GetXRSystemStatus(status);
+
+        printf("\n=== XR Supply Status ===\n");
+        printf("APU Fuel: %.1f%% (%.0f/%.0f kg)\n",
+            status.APUFuelLevel * 100, status.APUFuelLevel * status.APUMaxFuelMass, status.APUMaxFuelMass);
+        printf("LOX:      %.1f%% (%.0f/%.0f kg)\n",
+            status.LOXLevel * 100, status.LOXLevel * status.LOXMaxMass, status.LOXMaxMass);
+
+        printf("Fuel Hatch: %s\n", DoorStateStr(xr->GetFuelHatchState()));
+        printf("LOX Hatch:  %s\n", DoorStateStr(xr->GetLoxHatchState()));
+        printf("Supply Lines:\n");
+        PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_MainFuel);
+        PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_ScramFuel);
+        PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_ApuFuel);
+        PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_Lox);
+    }
+#endif
 }
 
 void PrintMap(const char* arg) {

@@ -1,10 +1,14 @@
-// Controls.cpp - Control commands (autopilot, throttle, time warp)
+// Controls.cpp - Control commands (autopilot, throttle, time warp, resupply)
 
 #include "Controls.h"
 #include "Queries.h"
 #include "orbitersdk.h"
 #include <stdio.h>
 #include <string.h>
+
+#ifdef HAS_XRVESSELCTRL
+#include "XRVesselCtrl.h"
+#endif
 
 void PrintNav(const char* arg) {
     VESSEL* v = oapiGetFocusInterface();
@@ -155,3 +159,167 @@ void PrintWarp(const char* arg) {
     else
         printf("Time Warp: %.0fx\n", warp);
 }
+
+// =========================================================================
+// XR Vessel Resupply
+// =========================================================================
+
+#ifdef HAS_XRVESSELCTRL
+
+const char* DoorStateStr(XRDoorState s) {
+    switch (s) {
+    case XRDoorState::XRDS_Open:    return "OPEN";
+    case XRDoorState::XRDS_Closed:  return "closed";
+    case XRDoorState::XRDS_Opening: return "opening";
+    case XRDoorState::XRDS_Closing: return "closing";
+    case XRDoorState::XRDS_Failed:  return "FAILED";
+    default:                        return "N/A";
+    }
+}
+
+const char* SupplyLineName(XRSupplyLineID id) {
+    switch (id) {
+    case XRSupplyLineID::XRS_MainFuel:  return "Main Fuel";
+    case XRSupplyLineID::XRS_ScramFuel: return "SCRAM Fuel";
+    case XRSupplyLineID::XRS_ApuFuel:   return "APU Fuel";
+    case XRSupplyLineID::XRS_Lox:       return "LOX";
+    default:                            return "Unknown";
+    }
+}
+
+XRVesselCtrl* GetXRVessel(bool quiet) {
+    // Must use oapiGetVesselInterface (returns DLL-side object with correct vtable)
+    // NOT oapiGetFocusInterface (returns Orbiter internal proxy)
+    OBJHANDLE hFocus = oapiGetFocusObject();
+    if (!hFocus) {
+        if (!quiet) printf("No vessel\n");
+        return nullptr;
+    }
+
+    VESSEL* v = oapiGetVesselInterface(hFocus);
+    if (!v) {
+        if (!quiet) printf("No vessel\n");
+        return nullptr;
+    }
+
+    if (!XRVesselCtrl::IsXRVesselCtrl(v)) {
+        if (!quiet) printf("Not an XR vessel\n");
+        return nullptr;
+    }
+
+    XRVesselCtrl* xr = static_cast<XRVesselCtrl*>(v);
+    float ver = xr->GetCtrlAPIVersion();
+    if (ver < 5.0f) {
+        if (!quiet) printf("XRVesselCtrl API %.1f too old (need 5.0+)\n", ver);
+        return nullptr;
+    }
+
+    return xr;
+}
+
+void PrintSupplyLineStatus(XRVesselCtrl* xr, XRSupplyLineID id) {
+    XRSupplyLineStatus st = {};
+    if (!xr->GetExternalSupplyLineStatus(id, st))
+        return;
+    printf("  %-10s Flow: %-3s  Pressure: %6.1f / %.1f PSI %s\n",
+        SupplyLineName(id),
+        st.FlowSwitch ? "ON" : "off",
+        st.PressurePSI,
+        st.NominalPressurePSI,
+        st.PressureNominal ? "(nominal)" : "");
+}
+
+static void ShowResupplyStatus(XRVesselCtrl* xr) {
+    printf("Fuel Hatch: %s\n", DoorStateStr(xr->GetFuelHatchState()));
+    printf("LOX Hatch:  %s\n", DoorStateStr(xr->GetLoxHatchState()));
+    printf("Supply Lines:\n");
+    PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_MainFuel);
+    PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_ScramFuel);
+    PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_ApuFuel);
+    PrintSupplyLineStatus(xr, XRSupplyLineID::XRS_Lox);
+}
+
+void PrintResupply(const char* arg) {
+    XRVesselCtrl* xr = GetXRVessel();
+    if (!xr) return;
+
+    // No argument - show status
+    if (!arg || arg[0] == '\0') {
+        ShowResupplyStatus(xr);
+        return;
+    }
+
+    // "fuel open/close" - fuel hatch
+    if (_stricmp(arg, "fuel open") == 0) {
+        if (xr->SetFuelHatchState(true))
+            printf("Fuel hatch opened\n");
+        else
+            printf("Failed to open fuel hatch\n");
+    } else if (_stricmp(arg, "fuel close") == 0) {
+        if (xr->SetFuelHatchState(false))
+            printf("Fuel hatch closed\n");
+        else
+            printf("Failed to close fuel hatch\n");
+    }
+    // "lox open/close" - LOX hatch
+    else if (_stricmp(arg, "lox open") == 0) {
+        if (xr->SetLoxHatchState(true))
+            printf("LOX hatch opened\n");
+        else
+            printf("Failed to open LOX hatch\n");
+    } else if (_stricmp(arg, "lox close") == 0) {
+        if (xr->SetLoxHatchState(false))
+            printf("LOX hatch closed\n");
+        else
+            printf("Failed to close LOX hatch\n");
+    }
+    // "main on/off", "scram on/off", "apu on/off", "loxline on/off" - supply lines
+    else {
+        char line[32] = "";
+        char state[32] = "";
+        if (sscanf(arg, "%31s %31s", line, state) != 2) {
+            printf("Usage: rs [fuel|lox] [open|close]\n");
+            printf("       rs [main|scram|apu|loxline] [on|off]\n");
+            return;
+        }
+
+        XRSupplyLineID id;
+        if (_stricmp(line, "main") == 0)
+            id = XRSupplyLineID::XRS_MainFuel;
+        else if (_stricmp(line, "scram") == 0)
+            id = XRSupplyLineID::XRS_ScramFuel;
+        else if (_stricmp(line, "apu") == 0)
+            id = XRSupplyLineID::XRS_ApuFuel;
+        else if (_stricmp(line, "loxline") == 0)
+            id = XRSupplyLineID::XRS_Lox;
+        else {
+            printf("Unknown: %s\n", line);
+            printf("Hatches: fuel, lox (open/close)\n");
+            printf("Lines:   main, scram, apu, loxline (on/off)\n");
+            return;
+        }
+
+        bool bOpen;
+        if (_stricmp(state, "on") == 0)
+            bOpen = true;
+        else if (_stricmp(state, "off") == 0)
+            bOpen = false;
+        else {
+            printf("Use 'on' or 'off'\n");
+            return;
+        }
+
+        if (xr->SetExternalSupplyLineState(id, bOpen))
+            printf("%s flow: %s\n", SupplyLineName(id), bOpen ? "ON" : "off");
+        else
+            printf("Failed to set %s flow\n", SupplyLineName(id));
+    }
+}
+
+#else // !HAS_XRVESSELCTRL
+
+void PrintResupply(const char*) {
+    printf("XR vessel support not compiled in\n");
+}
+
+#endif

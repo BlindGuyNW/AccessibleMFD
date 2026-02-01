@@ -12,4 +12,15 @@ void PrintThrottle(const char* arg);
 // Time warp control
 void PrintWarp(const char* arg);
 
+// XR vessel resupply control
+void PrintResupply(const char* arg);
+
+#ifdef HAS_XRVESSELCTRL
+#include "XRVesselCtrl.h"
+XRVesselCtrl* GetXRVessel(bool quiet = false);
+const char* DoorStateStr(XRDoorState s);
+const char* SupplyLineName(XRSupplyLineID id);
+void PrintSupplyLineStatus(XRVesselCtrl* xr, XRSupplyLineID id);
+#endif
+
 #endif // CONTROLS_H
