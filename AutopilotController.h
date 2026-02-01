@@ -5,13 +5,20 @@
 
 #include "orbitersdk.h"
 
+#ifdef HAS_XRVESSELCTRL
+#include "XRVesselCtrl.h"
+#endif
+
 // Launch autopilot phases
 enum AutopilotState {
     AP_IDLE,           // Not active
     AP_PRELAUNCH,      // Armed, counting down
     AP_LIFTOFF,        // Vertical climb (first 10 seconds)
     AP_DEPARTURE_TURN, // Coordinated turn to target azimuth
-    AP_PITCHOVER,      // Gravity turn (pitch program)
+    AP_PITCHOVER,      // Gravity turn (pitch program) — DG profile
+    AP_XR_CLIMB,       // XR: main engines, steep climb to ~25km
+    AP_XR_SCRAM,       // XR: SCRAM cruise, dynamic pressure management
+    AP_XR_FINAL,       // XR: main engines, final push to orbit
     AP_COAST,          // Coasting to apoapsis
     AP_CIRCULARIZE,    // Circularization burn at apoapsis
     AP_COMPLETE,       // Orbit achieved
@@ -26,6 +33,7 @@ struct LaunchConfig {
     double pitchEndAlt;       // Altitude to end pitch program (m)
     double targetPitch;       // Final pitch at pitchEndAlt (radians)
     double maxDynPressure;    // Max Q limit for throttle reduction (Pa)
+    bool isXR;                // True if vessel is an XR type
 };
 
 // Autopilot controller - manages guidance and control
@@ -80,6 +88,10 @@ private:
     double m_met;             // Mission Elapsed Time
     double m_lastStatusTime;  // Last status update time
     int m_lastCountdown;      // Last countdown second announced
+
+    // XR SCRAM cruise tracking
+    double m_peakScramThrust;     // Peak combined SCRAM thrust observed (kN)
+    double m_mainRampDown;        // Current main engine throttle during SCRAM phase (1.0 → 0.0)
 
     // Status string for thread-safe access
     mutable char m_statusBuf[256];
