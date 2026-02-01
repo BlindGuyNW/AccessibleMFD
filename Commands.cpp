@@ -53,6 +53,8 @@ static Command s_commands[] = {
     {"throttle", "th",   true,  NULL, PrintThrottle},
     {"warp",     "w",    true,  NULL, PrintWarp},
     {"resupply", "rs",   true,  NULL, PrintResupply},
+    {"dump",     "dm",   true,  NULL, PrintFuelDump},
+    {"xfeed",    "xf",   true,  NULL, PrintCrossFeed},
 
     // Transfer planner (with args)
     {"target",   "tgt",  true,  NULL, PrintTarget},

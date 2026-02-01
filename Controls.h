@@ -15,6 +15,12 @@ void PrintWarp(const char* arg);
 // XR vessel resupply control
 void PrintResupply(const char* arg);
 
+// XR vessel fuel dump control
+void PrintFuelDump(const char* arg);
+
+// XR vessel cross-feed control
+void PrintCrossFeed(const char* arg);
+
 #ifdef HAS_XRVESSELCTRL
 #include "XRVesselCtrl.h"
 XRVesselCtrl* GetXRVessel(bool quiet = false);

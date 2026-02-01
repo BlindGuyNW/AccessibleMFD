@@ -316,9 +316,158 @@ void PrintResupply(const char* arg) {
     }
 }
 
+// =========================================================================
+// XR Vessel Fuel Dump
+// =========================================================================
+
+static const char* FuelDumpTankName(XRFuelDumpID id) {
+    switch (id) {
+    case XRFuelDumpID::XRFD_MainFuel:  return "Main Fuel";
+    case XRFuelDumpID::XRFD_RcsFuel:   return "RCS Fuel";
+    case XRFuelDumpID::XRFD_ScramFuel: return "SCRAM Fuel";
+    case XRFuelDumpID::XRFD_ApuFuel:   return "APU Fuel";
+    case XRFuelDumpID::XRFD_Lox:       return "LOX";
+    default:                           return "Unknown";
+    }
+}
+
+static void PrintDumpTankStatus(XRVesselCtrl* xr, XRFuelDumpID id) {
+    bool bDumping = false;
+    if (xr->GetFuelDumpState(id, bDumping))
+        printf("  %-10s %s\n", FuelDumpTankName(id), bDumping ? "DUMPING" : "off");
+}
+
+void PrintFuelDump(const char* arg) {
+    XRVesselCtrl* xr = GetXRVessel();
+    if (!xr) return;
+
+    if (xr->GetCtrlAPIVersion() < 6.0f) {
+        printf("XRVesselCtrl API %.1f too old (need 6.0+ for fuel dump)\n", xr->GetCtrlAPIVersion());
+        return;
+    }
+
+    // No argument - show status
+    if (!arg || arg[0] == '\0') {
+        printf("Fuel Dump Status:\n");
+        PrintDumpTankStatus(xr, XRFuelDumpID::XRFD_MainFuel);
+        PrintDumpTankStatus(xr, XRFuelDumpID::XRFD_RcsFuel);
+        PrintDumpTankStatus(xr, XRFuelDumpID::XRFD_ScramFuel);
+        PrintDumpTankStatus(xr, XRFuelDumpID::XRFD_ApuFuel);
+        PrintDumpTankStatus(xr, XRFuelDumpID::XRFD_Lox);
+        return;
+    }
+
+    // "off" - stop all dumping
+    if (_stricmp(arg, "off") == 0) {
+        xr->SetFuelDumpState(XRFuelDumpID::XRFD_MainFuel, false);
+        xr->SetFuelDumpState(XRFuelDumpID::XRFD_RcsFuel, false);
+        xr->SetFuelDumpState(XRFuelDumpID::XRFD_ScramFuel, false);
+        xr->SetFuelDumpState(XRFuelDumpID::XRFD_ApuFuel, false);
+        xr->SetFuelDumpState(XRFuelDumpID::XRFD_Lox, false);
+        printf("All fuel dumping stopped\n");
+        return;
+    }
+
+    // Parse "<tank> on/off"
+    char tank[32] = "";
+    char state[32] = "";
+    if (sscanf(arg, "%31s %31s", tank, state) != 2) {
+        printf("Usage: dump [<tank> on/off | off]\n");
+        printf("Tanks: main, rcs, scram, apu, lox\n");
+        return;
+    }
+
+    XRFuelDumpID id;
+    if (_stricmp(tank, "main") == 0)
+        id = XRFuelDumpID::XRFD_MainFuel;
+    else if (_stricmp(tank, "rcs") == 0)
+        id = XRFuelDumpID::XRFD_RcsFuel;
+    else if (_stricmp(tank, "scram") == 0)
+        id = XRFuelDumpID::XRFD_ScramFuel;
+    else if (_stricmp(tank, "apu") == 0)
+        id = XRFuelDumpID::XRFD_ApuFuel;
+    else if (_stricmp(tank, "lox") == 0)
+        id = XRFuelDumpID::XRFD_Lox;
+    else {
+        printf("Unknown tank: %s\n", tank);
+        printf("Tanks: main, rcs, scram, apu, lox\n");
+        return;
+    }
+
+    bool bDump;
+    if (_stricmp(state, "on") == 0)
+        bDump = true;
+    else if (_stricmp(state, "off") == 0)
+        bDump = false;
+    else {
+        printf("Use 'on' or 'off'\n");
+        return;
+    }
+
+    if (xr->SetFuelDumpState(id, bDump))
+        printf("%s: %s\n", FuelDumpTankName(id), bDump ? "DUMPING" : "stopped");
+    else
+        printf("Failed to set %s dump state\n", FuelDumpTankName(id));
+}
+
+// =========================================================================
+// XR Vessel Cross-Feed
+// =========================================================================
+
+static const char* CrossFeedModeStr(XRXFEED_STATE state) {
+    switch (state) {
+    case XRXFEED_STATE::XRXF_MAIN: return "MAIN";
+    case XRXFEED_STATE::XRXF_OFF:  return "off";
+    case XRXFEED_STATE::XRXF_RCS:  return "RCS";
+    default:                        return "N/A";
+    }
+}
+
+void PrintCrossFeed(const char* arg) {
+    XRVesselCtrl* xr = GetXRVessel();
+    if (!xr) return;
+
+    // No argument - show status
+    if (!arg || arg[0] == '\0') {
+        if (xr->GetCtrlAPIVersion() >= 6.0f) {
+            printf("Cross-Feed: %s\n", CrossFeedModeStr(xr->GetCrossFeedMode()));
+        } else {
+            printf("Cross-Feed status requires API 6.0+ (have %.1f)\n", xr->GetCtrlAPIVersion());
+            printf("Use 'xf main/off/rcs' to set mode\n");
+        }
+        return;
+    }
+
+    XRXFEED_STATE state;
+    if (_stricmp(arg, "main") == 0)
+        state = XRXFEED_STATE::XRXF_MAIN;
+    else if (_stricmp(arg, "off") == 0)
+        state = XRXFEED_STATE::XRXF_OFF;
+    else if (_stricmp(arg, "rcs") == 0)
+        state = XRXFEED_STATE::XRXF_RCS;
+    else {
+        printf("Unknown mode: %s\n", arg);
+        printf("Options: main, off, rcs\n");
+        return;
+    }
+
+    if (xr->SetCrossFeedMode(state))
+        printf("Cross-Feed: %s\n", CrossFeedModeStr(state));
+    else
+        printf("Failed to set cross-feed mode\n");
+}
+
 #else // !HAS_XRVESSELCTRL
 
 void PrintResupply(const char*) {
+    printf("XR vessel support not compiled in\n");
+}
+
+void PrintFuelDump(const char*) {
+    printf("XR vessel support not compiled in\n");
+}
+
+void PrintCrossFeed(const char*) {
     printf("XR vessel support not compiled in\n");
 }
 

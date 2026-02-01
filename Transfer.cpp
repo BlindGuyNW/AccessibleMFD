@@ -812,6 +812,11 @@ void PrintHelp() {
     printf("    rs lox open/close  - LOX hatch\n");
     printf("    rs main on/off     - Main fuel supply line\n");
     printf("    rs scram/apu/loxline on/off - Other supply lines\n");
+    printf("  dm, dump   - XR fuel dump status\n");
+    printf("    dm <tank> on/off - Start/stop dumping (main/rcs/scram/apu/lox)\n");
+    printf("    dm off   - Stop all dumping\n");
+    printf("  xf, xfeed  - XR cross-feed mode\n");
+    printf("    xf main/off/rcs - Set cross-feed mode\n");
     printf("\n=== Launch Autopilot ===\n");
     printf("  la, launch <alt>  - Launch to orbit (altitude in km)\n");
     printf("  la abort   - Abort launch autopilot\n");
