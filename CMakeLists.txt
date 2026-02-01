@@ -43,6 +43,9 @@ endif()
 # SDK paths
 set(ORBITER_SDK_INCLUDE "${ORBITER_DIR}/Orbitersdk/include")
 set(ORBITER_SDK_LIB "${ORBITER_DIR}/Orbitersdk/lib")
+
+# XRVessels SDK (optional - for XR vessel resupply support)
+set(XRVESSELS_DIR "C:/git/XRVessels" CACHE PATH "XRVessels source directory (for XRVesselCtrl.h)")
 set(ORBITER_PLUGIN_DIR "${ORBITER_DIR}/Modules/Plugin")
 
 message(STATUS "Orbiter SDK: ${ORBITER_DIR}")
@@ -131,6 +134,15 @@ target_link_libraries(${PRJ} PRIVATE
     Orbitersdk
     minhook
 )
+
+# XRVessels SDK include path (for XRVesselCtrl.h)
+if(EXISTS "${XRVESSELS_DIR}/XRVessels/framework/framework/XRVesselCtrl.h")
+    target_include_directories(${PRJ} PRIVATE "${XRVESSELS_DIR}/XRVessels/framework/framework")
+    target_compile_definitions(${PRJ} PRIVATE HAS_XRVESSELCTRL)
+    message(STATUS "XRVesselCtrl: ${XRVESSELS_DIR}")
+else()
+    message(STATUS "XRVesselCtrl: not found (resupply command disabled)")
+endif()
 
 # MSVC settings
 if(MSVC)

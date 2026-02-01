@@ -52,6 +52,7 @@ static Command s_commands[] = {
     {"nav",      "na",   true,  NULL, PrintNav},
     {"throttle", "th",   true,  NULL, PrintThrottle},
     {"warp",     "w",    true,  NULL, PrintWarp},
+    {"resupply", "rs",   true,  NULL, PrintResupply},
 
     // Transfer planner (with args)
     {"target",   "tgt",  true,  NULL, PrintTarget},
