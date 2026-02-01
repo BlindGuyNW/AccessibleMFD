@@ -27,6 +27,43 @@ void PrintNav(const char* arg) {
         printf("  Normal:      %s\n", v->GetNavmodeState(NAVMODE_NORMAL) ? "ON" : "off");
         printf("  Anti-Normal: %s\n", v->GetNavmodeState(NAVMODE_ANTINORMAL) ? "ON" : "off");
         printf("  Hold Alt:    %s\n", v->GetNavmodeState(NAVMODE_HOLDALT) ? "ON" : "off");
+
+#ifdef HAS_XRVESSELCTRL
+        XRVesselCtrl* xr = GetXRVessel(true);
+        if (xr) {
+            XRAttitudeHoldState att = {};
+            XRAutopilotState attState = xr->GetAttitudeHoldAP(att);
+            if (attState != XRAutopilotState::XRAPSTATE_NotSupported) {
+                if (att.on) {
+                    const char* mode = (att.mode == XRAttitudeHoldMode::XRAH_HoldAOA) ? "AOA" : "Pitch";
+                    printf("  Att Hold:    ON (%s %.1f deg, bank %.1f deg)\n", mode, att.TargetPitch, att.TargetBank);
+                } else {
+                    printf("  Att Hold:    off\n");
+                }
+            }
+
+            XRDescentHoldState desc = {};
+            XRAutopilotState descState = xr->GetDescentHoldAP(desc);
+            if (descState != XRAutopilotState::XRAPSTATE_NotSupported) {
+                if (desc.on) {
+                    printf("  Desc Hold:   ON (%.1f m/s%s)\n", desc.TargetDescentRate,
+                           desc.AutoLandMode ? ", AUTO-LAND" : "");
+                } else {
+                    printf("  Desc Hold:   off\n");
+                }
+            }
+
+            XRAirspeedHoldState spd = {};
+            XRAutopilotState spdState = xr->GetAirspeedHoldAP(spd);
+            if (spdState != XRAutopilotState::XRAPSTATE_NotSupported) {
+                if (spd.on) {
+                    printf("  Spd Hold:    ON (%.0f m/s)\n", spd.TargetAirspeed);
+                } else {
+                    printf("  Spd Hold:    off\n");
+                }
+            }
+        }
+#endif
         return;
     }
 
@@ -80,6 +117,42 @@ void PrintThrottle(const char* arg) {
         printf("  Main:  %5.1f%%\n", v->GetEngineLevel(ENGINE_MAIN) * 100.0);
         printf("  Retro: %5.1f%%\n", v->GetEngineLevel(ENGINE_RETRO) * 100.0);
         printf("  Hover: %5.1f%%\n", v->GetEngineLevel(ENGINE_HOVER) * 100.0);
+
+#ifdef HAS_XRVESSELCTRL
+        {
+            XRVesselCtrl* xr = GetXRVessel(true);
+            if (xr) {
+                XREngineStateRead left = {}, right = {};
+                bool haveLeft = xr->GetEngineState(XREngineID::XRE_ScramLeft, left);
+                bool haveRight = xr->GetEngineState(XREngineID::XRE_ScramRight, right);
+                if (haveLeft || haveRight) {
+                    double avgThrottle = 0;
+                    int count = 0;
+                    if (haveLeft) { avgThrottle += left.ThrottleLevel; count++; }
+                    if (haveRight) { avgThrottle += right.ThrottleLevel; count++; }
+                    if (count > 0) avgThrottle /= count;
+                    printf("  SCRAM: %5.1f%%\n", avgThrottle * 100.0);
+
+                    if (avgThrottle > 0) {
+                        if (haveLeft)
+                            printf("    L: %.1f kN  TSFC %.3f  Flow %.2f kg/s\n",
+                                   left.Thrust, left.TSFC, left.FlowRate);
+                        if (haveRight)
+                            printf("    R: %.1f kN  TSFC %.3f  Flow %.2f kg/s\n",
+                                   right.Thrust, right.TSFC, right.FlowRate);
+
+                        // Show temps if available
+                        if (haveLeft && left.DiffuserTemp >= 0)
+                            printf("    L temps: Diff %.0fK  Burn %.0fK  Exh %.0fK\n",
+                                   left.DiffuserTemp, left.BurnerTemp, left.ExhaustTemp);
+                        if (haveRight && right.DiffuserTemp >= 0)
+                            printf("    R temps: Diff %.0fK  Burn %.0fK  Exh %.0fK\n",
+                                   right.DiffuserTemp, right.BurnerTemp, right.ExhaustTemp);
+                    }
+                }
+            }
+        }
+#endif
         return;
     }
 
@@ -227,6 +300,68 @@ void PrintSupplyLineStatus(XRVesselCtrl* xr, XRSupplyLineID id) {
         st.PressurePSI,
         st.NominalPressurePSI,
         st.PressureNominal ? "(nominal)" : "");
+}
+
+// =========================================================================
+// Door Helpers
+// =========================================================================
+
+static const XRDoorID ALL_DOORS[] = {
+    XRDoorID::XRD_DockingPort, XRDoorID::XRD_ScramDoors, XRDoorID::XRD_HoverDoors,
+    XRDoorID::XRD_Ladder, XRDoorID::XRD_Gear, XRDoorID::XRD_RetroDoors,
+    XRDoorID::XRD_OuterAirlock, XRDoorID::XRD_InnerAirlock, XRDoorID::XRD_AirlockChamber,
+    XRDoorID::XRD_CrewHatch, XRDoorID::XRD_Radiator, XRDoorID::XRD_Speedbrake,
+    XRDoorID::XRD_APU, XRDoorID::XRD_CrewElevator, XRDoorID::XRD_PayloadBayDoors
+};
+static const int NUM_DOORS = sizeof(ALL_DOORS) / sizeof(ALL_DOORS[0]);
+
+const char* DoorName(XRDoorID id) {
+    switch (id) {
+    case XRDoorID::XRD_DockingPort:    return "Dock";
+    case XRDoorID::XRD_ScramDoors:     return "SCRAM Doors";
+    case XRDoorID::XRD_HoverDoors:     return "Hover Doors";
+    case XRDoorID::XRD_Ladder:         return "Ladder";
+    case XRDoorID::XRD_Gear:           return "Gear";
+    case XRDoorID::XRD_RetroDoors:     return "Retro Doors";
+    case XRDoorID::XRD_OuterAirlock:   return "Outer Airlock";
+    case XRDoorID::XRD_InnerAirlock:   return "Inner Airlock";
+    case XRDoorID::XRD_AirlockChamber: return "Chamber";
+    case XRDoorID::XRD_CrewHatch:      return "Hatch";
+    case XRDoorID::XRD_Radiator:       return "Radiator";
+    case XRDoorID::XRD_Speedbrake:     return "Speedbrake";
+    case XRDoorID::XRD_APU:            return "APU";
+    case XRDoorID::XRD_CrewElevator:   return "Elevator";
+    case XRDoorID::XRD_PayloadBayDoors:return "Bay Doors";
+    default:                           return "Unknown";
+    }
+}
+
+static bool ParseDoorName(const char* name, XRDoorID& id) {
+    struct DoorAlias { const char* name; XRDoorID id; };
+    static const DoorAlias aliases[] = {
+        {"dock",     XRDoorID::XRD_DockingPort},
+        {"scram",    XRDoorID::XRD_ScramDoors},
+        {"hover",    XRDoorID::XRD_HoverDoors},
+        {"ladder",   XRDoorID::XRD_Ladder},
+        {"gear",     XRDoorID::XRD_Gear},
+        {"retro",    XRDoorID::XRD_RetroDoors},
+        {"oairlock", XRDoorID::XRD_OuterAirlock},
+        {"iairlock", XRDoorID::XRD_InnerAirlock},
+        {"chamber",  XRDoorID::XRD_AirlockChamber},
+        {"hatch",    XRDoorID::XRD_CrewHatch},
+        {"radiator", XRDoorID::XRD_Radiator},
+        {"brake",    XRDoorID::XRD_Speedbrake},
+        {"apu",      XRDoorID::XRD_APU},
+        {"elevator", XRDoorID::XRD_CrewElevator},
+        {"bay",      XRDoorID::XRD_PayloadBayDoors},
+    };
+    for (int i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+        if (_stricmp(name, aliases[i].name) == 0) {
+            id = aliases[i].id;
+            return true;
+        }
+    }
+    return false;
 }
 
 static void ShowResupplyStatus(XRVesselCtrl* xr) {
@@ -457,6 +592,76 @@ void PrintCrossFeed(const char* arg) {
         printf("Failed to set cross-feed mode\n");
 }
 
+// =========================================================================
+// XR Vessel Door Control
+// =========================================================================
+
+void PrintDoors(const char* arg) {
+    XRVesselCtrl* xr = GetXRVessel();
+    if (!xr) return;
+
+    bool fullMode = (arg && ((_stricmp(arg, "all") == 0) || (_stricmp(arg, "full") == 0)));
+
+    // Check for open/close subcommand
+    if (arg && arg[0] != '\0' && !fullMode) {
+        char action[32] = "";
+        char doorName[32] = "";
+        if (sscanf(arg, "%31s %31s", action, doorName) == 2 &&
+            (_stricmp(action, "open") == 0 || _stricmp(action, "close") == 0)) {
+            XRDoorID doorId;
+            if (!ParseDoorName(doorName, doorId)) {
+                printf("Unknown door: %s\n", doorName);
+                printf("Doors: dock, scram, hover, ladder, gear, retro, oairlock, iairlock,\n");
+                printf("       chamber, hatch, radiator, brake, apu, elevator, bay\n");
+                return;
+            }
+            bool bOpen = (_stricmp(action, "open") == 0);
+            XRDoorState target = bOpen ? XRDoorState::XRDS_Opening : XRDoorState::XRDS_Closing;
+            if (xr->SetDoorState(doorId, target))
+                printf("%s: %s\n", DoorName(doorId), bOpen ? "opening" : "closing");
+            else
+                printf("Failed to %s %s\n", action, DoorName(doorId));
+            return;
+        }
+
+        // Unknown subcommand
+        printf("Usage: dr [all] | dr open/close <door>\n");
+        printf("Doors: dock, scram, hover, ladder, gear, retro, oairlock, iairlock,\n");
+        printf("       chamber, hatch, radiator, brake, apu, elevator, bay\n");
+        return;
+    }
+
+    if (fullMode) {
+        // Full listing
+        printf("Door Status (Full):\n");
+        for (int i = 0; i < NUM_DOORS; i++) {
+            double proc = 0;
+            XRDoorState state = xr->GetDoorState(ALL_DOORS[i], &proc);
+            if (state == XRDoorState::XRDS_DoorNotSupported) {
+                printf("  %-14s N/A\n", DoorName(ALL_DOORS[i]));
+            } else {
+                printf("  %-14s %-8s (%3.0f%%)\n", DoorName(ALL_DOORS[i]),
+                       DoorStateStr(state), proc * 100.0);
+            }
+        }
+    } else {
+        // Summary - only non-closed doors
+        int shown = 0;
+        for (int i = 0; i < NUM_DOORS; i++) {
+            double proc = 0;
+            XRDoorState state = xr->GetDoorState(ALL_DOORS[i], &proc);
+            if (state != XRDoorState::XRDS_Closed &&
+                state != XRDoorState::XRDS_DoorNotSupported) {
+                printf("  %-14s %-8s (%3.0f%%)\n", DoorName(ALL_DOORS[i]),
+                       DoorStateStr(state), proc * 100.0);
+                shown++;
+            }
+        }
+        if (shown == 0)
+            printf("All doors closed.\n");
+    }
+}
+
 #else // !HAS_XRVESSELCTRL
 
 void PrintResupply(const char*) {
@@ -468,6 +673,10 @@ void PrintFuelDump(const char*) {
 }
 
 void PrintCrossFeed(const char*) {
+    printf("XR vessel support not compiled in\n");
+}
+
+void PrintDoors(const char*) {
     printf("XR vessel support not compiled in\n");
 }
 

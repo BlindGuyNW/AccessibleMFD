@@ -47,6 +47,9 @@ static Command s_commands[] = {
     // Data queries (with args)
     {"map",      NULL,   true,  NULL, PrintMap},
     {"surface",  "sf",   true,  NULL, PrintSurface},
+    {"damage",   "dmg",  true,  NULL, PrintDamage},
+    {"temps",    "tp",   true,  NULL, PrintTemps},
+    {"reentry",  "re",   true,  NULL, PrintReentry},
 
     // Control commands (with args)
     {"nav",      "na",   true,  NULL, PrintNav},
@@ -55,6 +58,7 @@ static Command s_commands[] = {
     {"resupply", "rs",   true,  NULL, PrintResupply},
     {"dump",     "dm",   true,  NULL, PrintFuelDump},
     {"xfeed",    "xf",   true,  NULL, PrintCrossFeed},
+    {"doors",    "dr",   true,  NULL, PrintDoors},
 
     // Transfer planner (with args)
     {"target",   "tgt",  true,  NULL, PrintTarget},

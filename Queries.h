@@ -24,4 +24,9 @@ void PrintCockpit();
 void PrintButtons(const char* arg);
 void PressButton(const char* arg);
 
+// XR vessel queries
+void PrintDamage(const char* arg);
+void PrintTemps(const char* arg);
+void PrintReentry(const char* arg);
+
 #endif // QUERIES_H

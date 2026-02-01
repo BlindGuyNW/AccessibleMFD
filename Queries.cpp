@@ -393,6 +393,27 @@ void PrintFlight() {
 
     printf("Pitch: %.1f deg\n", v->GetPitch() * DEG);
     printf("Bank: %.1f deg\n", v->GetBank() * DEG);
+
+#ifdef HAS_XRVESSELCTRL
+    {
+        XRVesselCtrl* xr = GetXRVessel(true);
+        if (xr) {
+            XRSystemStatusRead st = {};
+            xr->GetXRSystemStatus(st);
+
+            printf("Cabin O2: %.1f%%\n", st.CabinO2Level * 100.0);
+
+            if (st.CenterOfGravity != 0.0)
+                printf("COG: %.3f m%s\n", st.CenterOfGravity,
+                       st.COGAutoMode ? " (auto)" : "");
+
+            if (st.MasterWarning == XRWarningState::XRW_warningActive)
+                printf("*** MASTER WARNING ACTIVE ***\n");
+            if (st.InternalSystemsFailure)
+                printf("*** INTERNAL SYSTEMS FAILURE ***\n");
+        }
+    }
+#endif
 }
 
 // Helper: Print captured MFD text entries sorted by (y, x) and grouped into lines
@@ -2033,6 +2054,277 @@ void PressButton(const char* arg) {
         // Show updated labels
         PrintButtons(sideStr);
     }
+}
+
+// =========================================================================
+// XR Vessel Damage Report
+// =========================================================================
+
+void PrintDamage(const char* arg) {
+#ifdef HAS_XRVESSELCTRL
+    XRVesselCtrl* xr = GetXRVessel();
+    if (!xr) return;
+
+    XRSystemStatusRead st = {};
+    xr->GetXRSystemStatus(st);
+
+    bool fullMode = (arg && ((_stricmp(arg, "all") == 0) || (_stricmp(arg, "full") == 0)));
+
+    // Helpers for printing
+    struct DmgDouble { const char* name; double value; };
+    struct DmgState { const char* name; XRDamageState value; };
+
+    DmgDouble doubles[] = {
+        {"Left Wing",           st.LeftWing},
+        {"Right Wing",          st.RightWing},
+        {"Left Main Engine",    st.LeftMainEngine},
+        {"Right Main Engine",   st.RightMainEngine},
+        {"Left SCRAM Engine",   st.LeftSCRAMEngine},
+        {"Right SCRAM Engine",  st.RightSCRAMEngine},
+        {"Fore Hover Engine",   st.ForeHoverEngine},
+        {"Aft Hover Engine",    st.AftHoverEngine},
+        {"Left Retro Engine",   st.LeftRetroEngine},
+        {"Right Retro Engine",  st.RightRetroEngine},
+        {"Fwd Lower RCS",      st.ForwardLowerRCS},
+        {"Aft Upper RCS",       st.AftUpperRCS},
+        {"Fwd Upper RCS",       st.ForwardUpperRCS},
+        {"Aft Lower RCS",       st.AftLowerRCS},
+        {"Fwd Stbd RCS",        st.ForwardStarboardRCS},
+        {"Aft Port RCS",        st.AftPortRCS},
+        {"Fwd Port RCS",        st.ForwardPortRCS},
+        {"Aft Stbd RCS",        st.AftStarboardRCS},
+        {"Outbd Upper Port RCS",     st.OutboardUpperPortRCS},
+        {"Outbd Lower Stbd RCS",     st.OutboardLowerStarboardRCS},
+        {"Outbd Upper Stbd RCS",     st.OutboardUpperStarboardRCS},
+        {"Outbd Lower Port RCS",     st.OutboardLowerPortRCS},
+        {"Aft RCS",             st.AftRCS},
+        {"Forward RCS",         st.ForwardRCS},
+    };
+    int numDoubles = sizeof(doubles) / sizeof(doubles[0]);
+
+    DmgState states[] = {
+        {"Left Aileron",   st.LeftAileron},
+        {"Right Aileron",  st.RightAileron},
+        {"Landing Gear",   st.LandingGear},
+        {"Docking Port",   st.DockingPort},
+        {"Retro Doors",    st.RetroDoors},
+        {"Top Hatch",      st.TopHatch},
+        {"Radiator",       st.Radiator},
+        {"Speedbrake",     st.Speedbrake},
+        {"Bay Doors",      st.PayloadBayDoors},
+        {"Crew Elevator",  st.CrewElevator},
+    };
+    int numStates = sizeof(states) / sizeof(states[0]);
+
+    if (fullMode) {
+        // Full listing
+        printf("=== Damage Report (Full) ===\n");
+
+        printf("Wings:\n");
+        printf("  Left Wing:  %.0f%%\n", st.LeftWing * 100.0);
+        printf("  Right Wing: %.0f%%\n", st.RightWing * 100.0);
+
+        printf("Main Engines:\n");
+        printf("  Left:  %.0f%%\n", st.LeftMainEngine * 100.0);
+        printf("  Right: %.0f%%\n", st.RightMainEngine * 100.0);
+
+        printf("SCRAM Engines:\n");
+        printf("  Left:  %.0f%%\n", st.LeftSCRAMEngine * 100.0);
+        printf("  Right: %.0f%%\n", st.RightSCRAMEngine * 100.0);
+
+        printf("Hover Engines:\n");
+        printf("  Fore: %.0f%%\n", st.ForeHoverEngine * 100.0);
+        printf("  Aft:  %.0f%%\n", st.AftHoverEngine * 100.0);
+
+        printf("Retro Engines:\n");
+        printf("  Left:  %.0f%%\n", st.LeftRetroEngine * 100.0);
+        printf("  Right: %.0f%%\n", st.RightRetroEngine * 100.0);
+
+        printf("RCS Thrusters:\n");
+        for (int i = 10; i < numDoubles; i++) {
+            if (doubles[i].value >= 0)
+                printf("  %-24s %.0f%%\n", doubles[i].name, doubles[i].value * 100.0);
+        }
+
+        printf("Control Surfaces:\n");
+        for (int i = 0; i < 2; i++) {
+            if (states[i].value != XRDamageState::XRDMG_NotSupported)
+                printf("  %-24s %s\n", states[i].name,
+                       states[i].value == XRDamageState::XRDMG_online ? "online" : "OFFLINE");
+        }
+
+        printf("Mechanical:\n");
+        for (int i = 2; i < numStates; i++) {
+            if (states[i].value != XRDamageState::XRDMG_NotSupported)
+                printf("  %-24s %s\n", states[i].name,
+                       states[i].value == XRDamageState::XRDMG_online ? "online" : "OFFLINE");
+        }
+
+        // Warnings
+        printf("Warnings:\n");
+        printf("  Master:      %s\n", st.MasterWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+        printf("  Hull Temp:   %s\n", st.HullTemperatureWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+        printf("  Main Fuel:   %s\n", st.MainFuelWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+        printf("  RCS Fuel:    %s\n", st.RCSFuelWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+        printf("  APU Fuel:    %s\n", st.APUFuelWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+        printf("  LOX:         %s\n", st.LOXWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+        printf("  Dyn Press:   %s\n", st.DynamicPressureWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+        printf("  Coolant:     %s\n", st.CoolantWarning == XRWarningState::XRW_warningActive ? "ACTIVE" : "off");
+    } else {
+        // Summary mode - only show problems
+        int issues = 0;
+        int checked = 0;
+
+        for (int i = 0; i < numDoubles; i++) {
+            if (doubles[i].value >= 0) {
+                checked++;
+                if (doubles[i].value < 1.0) {
+                    printf("  %-24s %3.0f%%\n", doubles[i].name, doubles[i].value * 100.0);
+                    issues++;
+                }
+            }
+        }
+        for (int i = 0; i < numStates; i++) {
+            if (states[i].value != XRDamageState::XRDMG_NotSupported) {
+                checked++;
+                if (states[i].value == XRDamageState::XRDMG_offline) {
+                    printf("  %-24s OFFLINE\n", states[i].name);
+                    issues++;
+                }
+            }
+        }
+
+        // Active warnings
+        if (st.MasterWarning == XRWarningState::XRW_warningActive) {
+            printf("  *** MASTER WARNING ACTIVE ***\n");
+            issues++;
+        }
+        if (st.InternalSystemsFailure) {
+            printf("  *** INTERNAL SYSTEMS FAILURE ***\n");
+            issues++;
+        }
+
+        if (issues == 0)
+            printf("All systems nominal (%d checked)\n", checked);
+        else
+            printf("%d issue%s found\n", issues, issues == 1 ? "" : "s");
+    }
+#else
+    printf("XR vessel support not compiled in\n");
+#endif
+}
+
+// =========================================================================
+// XR Vessel Hull Temperatures
+// =========================================================================
+
+void PrintTemps(const char* arg) {
+#ifdef HAS_XRVESSELCTRL
+    XRVesselCtrl* xr = GetXRVessel();
+    if (!xr) return;
+
+    XRSystemStatusRead st = {};
+    xr->GetXRSystemStatus(st);
+
+    printf("Hull Temperatures:\n");
+
+    struct HullSurf { const char* name; double temp; double maxSafe; };
+    HullSurf surfaces[] = {
+        {"Nosecone",   st.NoseconeTemp,  st.MaxSafeNoseconeTemp},
+        {"Left Wing",  st.LeftWingTemp,   st.MaxSafeWingTemp},
+        {"Right Wing", st.RightWingTemp,  st.MaxSafeWingTemp},
+        {"Cockpit",    st.CockpitTemp,    st.MaxSafeCockpitTemp},
+        {"Top Hull",   st.TopHullTemp,    st.MaxSafeTopHullTemp},
+    };
+
+    for (int i = 0; i < 5; i++) {
+        if (surfaces[i].temp < 0 || surfaces[i].maxSafe <= 0) continue;
+        double pct = (surfaces[i].temp / surfaces[i].maxSafe) * 100.0;
+        const char* warn = "";
+        if (pct >= 100.0)     warn = " ** OVER LIMIT **";
+        else if (pct >= 90.0) warn = " ** CRITICAL **";
+        else if (pct >= 80.0) warn = " ** HIGH **";
+        printf("  %-10s %5.0fK / %5.0fK  (%3.0f%%)%s\n",
+               surfaces[i].name, surfaces[i].temp, surfaces[i].maxSafe, pct, warn);
+    }
+
+    if (st.CoolantTemp >= -270)
+        printf("  Coolant:   %.0f C\n", st.CoolantTemp);
+
+    if (st.HullTemperatureWarning == XRWarningState::XRW_warningActive)
+        printf("  *** HULL TEMPERATURE WARNING ***\n");
+    if (st.CoolantWarning == XRWarningState::XRW_warningActive)
+        printf("  *** COOLANT WARNING ***\n");
+#else
+    printf("XR vessel support not compiled in\n");
+#endif
+}
+
+// =========================================================================
+// XR Vessel Reentry Checklist
+// =========================================================================
+
+void PrintReentry(const char* arg) {
+#ifdef HAS_XRVESSELCTRL
+    XRVesselCtrl* xr = GetXRVessel();
+    if (!xr) return;
+
+    struct ReentryDoor { const char* name; XRDoorID id; };
+    static const ReentryDoor doors[] = {
+        {"SCRAM Doors", XRDoorID::XRD_ScramDoors},
+        {"Hover Doors", XRDoorID::XRD_HoverDoors},
+        {"Gear",        XRDoorID::XRD_Gear},
+        {"Retro Doors", XRDoorID::XRD_RetroDoors},
+        {"Radiator",    XRDoorID::XRD_Radiator},
+        {"Speedbrake",  XRDoorID::XRD_Speedbrake},
+    };
+    static const int numDoors = sizeof(doors) / sizeof(doors[0]);
+
+    bool doClose = (arg && (_stricmp(arg, "close") == 0));
+
+    if (doClose) {
+        // Close any open reentry doors
+        for (int i = 0; i < numDoors; i++) {
+            XRDoorState state = xr->GetDoorState(doors[i].id);
+            if (state == XRDoorState::XRDS_Open || state == XRDoorState::XRDS_Opening) {
+                if (xr->SetDoorState(doors[i].id, XRDoorState::XRDS_Closing))
+                    printf("Closing %s\n", doors[i].name);
+                else
+                    printf("Failed to close %s\n", doors[i].name);
+            }
+        }
+        printf("\n");
+    }
+
+    // Show checklist
+    printf("Reentry Checklist:\n");
+    int noGo = 0;
+    for (int i = 0; i < numDoors; i++) {
+        XRDoorState state = xr->GetDoorState(doors[i].id);
+        if (state == XRDoorState::XRDS_DoorNotSupported) continue;
+        const char* status;
+        if (state == XRDoorState::XRDS_Closed) {
+            status = "go";
+        } else if (state == XRDoorState::XRDS_Opening || state == XRDoorState::XRDS_Closing) {
+            status = "...";
+            noGo++;
+        } else {
+            status = "NO-GO";
+            noGo++;
+        }
+        printf("  %-12s %s\n", doors[i].name, status);
+    }
+
+    if (noGo == 0)
+        printf("GO for reentry\n");
+    else {
+        printf("NO-GO (%d door%s not closed)\n", noGo, noGo == 1 ? "" : "s");
+        if (!doClose)
+            printf("Type \"re close\" to close all open doors.\n");
+    }
+#else
+    printf("XR vessel support not compiled in\n");
+#endif
 }
 
 void PrintAll() {

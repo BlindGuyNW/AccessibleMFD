@@ -782,6 +782,11 @@ void PrintHelp() {
     printf("    d ports  - List our ports and target ports\n");
     printf("  fu, fuel   - Fuel status (per tank, dV, flow)\n");
     printf("    fuel <n> - Detailed info for tank n\n");
+    printf("  dmg, damage - System integrity (XR)\n");
+    printf("    dmg all  - Full damage report\n");
+    printf("  tp, temps  - Hull temperatures (XR)\n");
+    printf("  re, reentry - Reentry door checklist (XR)\n");
+    printf("    re close - Close all reentry doors\n");
     printf("  map        - Position, altitude, ground track\n");
     printf("  map bases  - List bases with distance/bearing\n");
     printf("  a, all     - All data\n");
@@ -817,6 +822,9 @@ void PrintHelp() {
     printf("    dm off   - Stop all dumping\n");
     printf("  xf, xfeed  - XR cross-feed mode\n");
     printf("    xf main/off/rcs - Set cross-feed mode\n");
+    printf("  dr, doors  - Door status (XR)\n");
+    printf("    dr all   - Full door listing\n");
+    printf("    dr open/close <door> - Open/close a door\n");
     printf("\n=== Launch Autopilot ===\n");
     printf("  la, launch <alt>  - Launch to orbit (altitude in km)\n");
     printf("  la abort   - Abort launch autopilot\n");

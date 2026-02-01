@@ -21,10 +21,14 @@ void PrintFuelDump(const char* arg);
 // XR vessel cross-feed control
 void PrintCrossFeed(const char* arg);
 
+// XR vessel door control
+void PrintDoors(const char* arg);
+
 #ifdef HAS_XRVESSELCTRL
 #include "XRVesselCtrl.h"
 XRVesselCtrl* GetXRVessel(bool quiet = false);
 const char* DoorStateStr(XRDoorState s);
+const char* DoorName(XRDoorID id);
 const char* SupplyLineName(XRSupplyLineID id);
 void PrintSupplyLineStatus(XRVesselCtrl* xr, XRSupplyLineID id);
 #endif
