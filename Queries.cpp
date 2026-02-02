@@ -155,10 +155,16 @@ static double CalcDockAngularError(VESSEL* v, UINT refDock, OBJHANDLE hTarget, U
         *rotAxis = dirAxisShip * dirAngle;
 
         // Add roll correction around dock direction (Z axis in ship frame)
-        // Only add significant roll correction when direction is reasonably close
-        if (dirAngle < 0.35) {  // < 20 degrees - direction close enough to fix roll
-            rotAxis->z += rollAngle * rollSign;
-            AlignLog("Added roll correction: %.4f rad\n", rollAngle * rollSign);
+        // Scale roll authority: full when direction is close, reduced when far off
+        // (at large direction errors, prioritize pointing before roll)
+        double rollScale = 1.0;
+        if (dirAngle > 0.35) {  // > 20 degrees
+            rollScale = 0.35 / dirAngle;  // Taper smoothly
+        }
+        if (rollAngle > 0.01) {
+            rotAxis->z += rollAngle * rollSign * rollScale;
+            AlignLog("Added roll correction: %.4f rad (scale %.2f)\n",
+                     rollAngle * rollSign * rollScale, rollScale);
         }
 
         AlignLog("rotAxis (combined): %.4f, %.4f, %.4f\n",
@@ -226,6 +232,14 @@ static void DockAutoAlign(VESSEL* v, OBJHANDLE hTarget, UINT tgtDock) {
             printf("\n\nALIGNED! Error: %.1f deg\n", error);
             break;
         }
+
+        // Deactivate navmodes every tick — they can re-engage and override RCS
+        v->DeactivateNavmode(NAVMODE_KILLROT);
+        v->DeactivateNavmode(NAVMODE_PROGRADE);
+        v->DeactivateNavmode(NAVMODE_RETROGRADE);
+        v->DeactivateNavmode(NAVMODE_HLEVEL);
+        v->DeactivateNavmode(NAVMODE_NORMAL);
+        v->DeactivateNavmode(NAVMODE_ANTINORMAL);
 
         // Calculate control input with PD control
         // NEGATE rotAxis because cross product gives rotation FROM current TO desired,
@@ -751,336 +765,297 @@ static bool CalcDockAlignment(VESSEL* v, UINT refDock, OBJHANDLE hTarget, UINT t
     data->vY = relVelDock.y;
     data->vZ = relVelDock.z;
 
-    // DEBUG: Log raw values to diagnose sign conventions
-    static FILE* debugLog = nullptr;
-    static int logCount = 0;
-    if (!debugLog) {
-        debugLog = fopen("velocity.log", "w");
-    }
-    if (debugLog && logCount < 50) {
-        fprintf(debugLog, "=== Sample %d ===\n", logCount);
-        fprintf(debugLog, "Position: hDisp=%.2f vDisp=%.2f dist=%.2f\n", data->hDisp, data->vDisp, data->dist);
-        fprintf(debugLog, "Velocity: vX=%.3f vY=%.3f vZ=%.3f\n", data->vX, data->vY, data->vZ);
-        fprintf(debugLog, "Raw relDock: x=%.2f y=%.2f z=%.2f\n", relDock.x, relDock.y, relDock.z);
-        fprintf(debugLog, "Raw relVelDock: x=%.3f y=%.3f z=%.3f\n", relVelDock.x, relVelDock.y, relVelDock.z);
-        fprintf(debugLog, "\n");
-        fflush(debugLog);
-        logCount++;
-    }
-
     return true;
 }
 
 // Helper: Get next docking action based on priority
-// Order: 1) Stop, 2) Rotate, 3) Translate, 4) Approach
-static void GetNextDockAction(const DockAlignData& d, char* action, size_t actionLen,
+// Phases: 1) Stop, 2) Align, 3) Translate, 4) Approach, 5) Hold
+// attError = total angular error in degrees from CalcDockAngularError
+// rotAxis = rotation error in ship coords (x=pitch, y=yaw, z=roll) in radians
+static void GetNextDockAction(const DockAlignData& d, double attError,
+                              const VECTOR3& rotAxis,
+                              char* action, size_t actionLen,
                               char* key, size_t keyLen) {
-    // Thresholds
-    const double VEL_STOP = 0.3;     // must stop if above this (m/s)
-    const double VEL_FINE = 0.1;     // fine velocity threshold
-    const double ATT_BAD = 10.0;     // attitude needs fixing (deg)
-    const double ATT_FINE = 5.0;     // fine attitude (deg) - relaxed since dock align uses different calc
-    const double POS_LARGE = 2.0;    // position offset (m)
-    const double POS_FINE = 0.5;     // fine position (m)
-
-    // Calculate total lateral velocity (not counting approach axis)
-    double lateralVel = sqrt(d.vX*d.vX + d.vY*d.vY);
+    // Velocity convention: vX/vY/vZ are OUR velocity relative to target in dock frame
+    // vX > 0 = drifting right, vY > 0 = drifting up, vZ > 0 = approaching
+    // To stop: thrust opposite (vX>0 -> Num1 left, vY>0 -> Num8 down, vZ>0 -> Num9 back)
     double totalVel = sqrt(d.vX*d.vX + d.vY*d.vY + d.vZ*d.vZ);
 
-    // ============ PHASE 1: STOP (null velocity first) ============
-    // Must stop before we can rotate or position accurately
-    // Note: vX/vY/vZ are target's velocity relative to us
-    // If vX > 0, target drifts right = we're moving left = need to thrust right (Num6) to stop
-    // WRONG! If we're moving left, we need to thrust RIGHT to stop. Num6 thrusts right.
-    // Actually: if vX > 0 (target moving right relative to us), we're moving LEFT.
-    // To stop moving left, we thrust RIGHT (Num6). But wait, that's what the code said...
-    // Let me reconsider: thrust RIGHT (Num6) adds rightward velocity to us.
-    // If we're moving left (vX > 0 in target-relative terms), thrust right cancels it.
-    // Hmm, but the user's log showed velocity building up, not canceling...
-    //
-    // Actually the REAL issue: vX is target's velocity relative to us.
-    // If vX > 0, target is moving right relative to us = we're moving LEFT relative to target.
-    // To STOP, we need to move RIGHT to match, so Num6.
-    // But to CANCEL our leftward motion, we need to thrust RIGHT... that's Num6. Seems correct?
-    //
-    // Wait - I think the sign might be backwards. Let me reconsider from physics:
-    // If I'm drifting LEFT, I have negative X velocity in my frame.
-    // To stop, I thrust RIGHT (positive X), which is Num6.
-    // But vX here is target's velocity relative to us, which is OPPOSITE of our velocity.
-    // So if vX > 0 (target drifting right), our velocity is NEGATIVE (we're going left).
-    // To stop going left, we thrust right = Num6. So vX > 0 -> Num6? That seems backwards!
-    //
-    // NO: to STOP we need to OPPOSE our motion. If we're going left (vX > 0 target-relative),
-    // we thrust RIGHT to slow down. But Num6 adds rightward velocity...
-    // To CANCEL leftward motion, thrust RIGHT = Num6. That matches.
-    //
-    // The problem is: the code says "STOP Vx +0.6, Num6" but Num6 adds MORE rightward velocity.
-    // We want to REDUCE velocity, not add more in the same direction.
-    //
-    // I think the issue is: vX > 0 means target drifting right = we drifting left.
-    // We want to stop drifting left = thrust right = Num6 to COUNTER our leftward drift.
-    // But the current code does vX > 0 ? Num6 : Num4, which seems correct for stopping.
-    //
-    // Unless... the convention is different. Let me just flip the signs and see.
+    // ============ PHASE 1: STOP (velocity too high for distance) ============
+    double velLimit = fmin(2.0, fmax(0.3, d.dist * 0.003));
 
-    // IMPORTANT: Only try to stop velocity if attitude is roughly correct!
-    // Translation thrusters work in ship frame - if we're pointed 30° off,
-    // "forward" thrust goes in the wrong direction and makes things worse.
-    // Check attitude first - if bad, skip to rotation phase.
-    double maxAttError = fmax(fabs(d.yaw), fabs(d.pitch));
-    bool attitudeGoodEnough = (maxAttError < 15.0);  // Within 15 degrees
-
-    if (attitudeGoodEnough && totalVel > VEL_STOP) {
-        // Find largest velocity component and null it
-        // vX/vY/vZ = target's relative velocity (target moving relative to us)
-        // Since target is ~stationary, this reflects OUR motion (inverted):
-        //   vX > 0 = target drifts right = WE move LEFT  -> thrust RIGHT (Num6) to stop
-        //   vY > 0 = target drifts up    = WE move DOWN  -> thrust UP (Num8) to stop
-        //   vZ > 0 = target drifts away  = WE move BACK  -> thrust FORWARD (Num9) to stop
-        //   (vZ < 0 = approaching = thrust BACK Num3 to slow down)
-        // vX/vY/vZ = OUR velocity relative to target (GetRelativeVel returns our velocity)
-        // To STOP, thrust OPPOSITE to our velocity direction
-        // Keys: Left=Num1, Right=Num3, Up=Num2, Down=Num8, Fwd=Num6, Back=Num9
+    if (totalVel > velLimit) {
+        // Report dominant velocity axis
         if (fabs(d.vX) >= fabs(d.vY) && fabs(d.vX) >= fabs(d.vZ)) {
-            snprintf(action, actionLen, "STOP Vx %+.1f m/s (trans mode)", d.vX);
-            snprintf(key, keyLen, d.vX > 0 ? "Num1" : "Num3");  // vX>0 = moving right, Num1 (left) to stop
-        } else if (fabs(d.vY) >= fabs(d.vZ)) {
-            snprintf(action, actionLen, "STOP Vy %+.1f m/s (trans mode)", d.vY);
-            snprintf(key, keyLen, d.vY > 0 ? "Num8" : "Num2");  // vY>0 = moving up, Num8 (down) to stop
-        } else {
-            snprintf(action, actionLen, "STOP Vz %+.1f m/s (trans mode)", d.vZ);
-            snprintf(key, keyLen, d.vZ > 0 ? "Num9" : "Num6");  // vZ>0 = approaching, Num9 (back) to slow
-        }
-        return;
-    }
-
-    // ============ PHASE 2: ROTATE (fix attitude) ============
-    // NOTE: yaw/pitch here are angles TO TARGET POSITION, not orientation error.
-    // After dock align, orientation is good but we may be offset from approach path.
-    // Only suggest rotation if BOTH position offset is small AND angles are large,
-    // which would indicate actual orientation error, not position offset.
-
-    // If we're far from the approach path (large position offset), the yaw/pitch
-    // are just telling us where the target is, not that we need to rotate.
-    // Skip rotation phase and go straight to translation.
-    double posOffset = sqrt(d.hDisp*d.hDisp + d.vDisp*d.vDisp);
-
-    // Only consider rotation if position offset is small (< 3m)
-    // Otherwise, translate first to get on approach path
-    if (posOffset < 3.0) {
-        double maxAtt = fmax(fabs(d.yaw), fmax(fabs(d.pitch), fabs(d.bank)));
-
-        // Normalize bank - if near ±180°, it might just be a calculation artifact
-        double bankErr = fabs(d.bank);
-        if (bankErr > 170.0) bankErr = 180.0 - bankErr;  // Treat 178° as 2° error
-        maxAtt = fmax(fabs(d.yaw), fmax(fabs(d.pitch), bankErr));
-
-        if (maxAtt > 45.0) {
-            snprintf(action, actionLen, "POINT AT DOCK: Y%+.0f P%+.0f R%+.0f",
-                     d.yaw, d.pitch, d.bank);
-            snprintf(key, keyLen, "use dock align");
-            return;
-        }
-
-        // Rotation keys: YawL=Num1, YawR=Num3, PitchU=Num2, PitchD=Num8, BankL=Num4, BankR=Num6
-        if (maxAtt > ATT_BAD) {
-            if (fabs(d.yaw) > ATT_BAD) {
-                snprintf(action, actionLen, "YAW %+.0f (rot mode)", d.yaw);
-                snprintf(key, keyLen, d.yaw > 0 ? "Num1" : "Num3");
-            } else if (fabs(d.pitch) > ATT_BAD) {
-                snprintf(action, actionLen, "PITCH %+.0f (rot mode)", d.pitch);
-                snprintf(key, keyLen, d.pitch > 0 ? "Num2" : "Num8");
-            } else if (bankErr > ATT_BAD) {
-                snprintf(action, actionLen, "ROLL %+.0f (rot mode)", d.bank);
-                snprintf(key, keyLen, d.bank > 0 ? "Num4" : "Num6");
-            }
-            return;
-        }
-
-        if (maxAtt > ATT_FINE) {
-            if (fabs(d.yaw) > ATT_FINE) {
-                snprintf(action, actionLen, "Fine yaw %+.0f (rot)", d.yaw);
-                snprintf(key, keyLen, d.yaw > 0 ? "Num1" : "Num3");
-            } else if (fabs(d.pitch) > ATT_FINE) {
-                snprintf(action, actionLen, "Fine pitch %+.0f (rot)", d.pitch);
-                snprintf(key, keyLen, d.pitch > 0 ? "Num2" : "Num8");
-            } else if (bankErr > ATT_FINE) {
-                snprintf(action, actionLen, "Fine roll %+.0f (rot)", d.bank);
-                snprintf(key, keyLen, d.bank > 0 ? "Num4" : "Num6");
-            }
-            return;
-        }
-    }
-
-    // ============ PHASE 3: TRANSLATE (fix position) ============
-    // Work on ONE axis at a time until done - don't switch back and forth!
-    // Order: fix H first (until < 1m), then fix V (until < 1m)
-    // Keys: Left=Num1, Right=Num3, Up=Num2, Down=Num8
-
-    // Step 1: Fix H axis first (until |hDisp| < 1m)
-    // SAME signs = moving toward zero (positive vel decreases positive pos)
-    if (fabs(d.hDisp) > 1.0) {
-        bool movingCorrectWay = (d.hDisp > 0 && d.vX > 0.05) || (d.hDisp < 0 && d.vX < -0.05);
-        bool movingWrongWay = (d.hDisp > 0 && d.vX < -0.1) || (d.hDisp < 0 && d.vX > 0.1);
-
-        if (movingWrongWay) {
-            snprintf(action, actionLen, "STOP DRIFT H %+.1fm Vx%+.1f (trans)", d.hDisp, d.vX);
+            snprintf(action, actionLen, "STOP: %.1fm/s, drift %s",
+                     fabs(d.vX), d.vX > 0 ? "right" : "left");
             snprintf(key, keyLen, d.vX > 0 ? "Num1" : "Num3");
-        } else if (movingCorrectWay) {
-            snprintf(action, actionLen, "COAST H %+.1fm Vx%+.1f (trans)", d.hDisp, d.vX);
-            snprintf(key, keyLen, "wait");
-        } else {
-            // pos>0 needs pos vel (Num3=right), pos<0 needs neg vel (Num1=left)
-            snprintf(action, actionLen, "MOVE H %+.1fm (trans mode)", d.hDisp);
-            snprintf(key, keyLen, d.hDisp > 0 ? "Num3" : "Num1");
-        }
-        return;
-    }
-
-    // Step 2: Then fix V axis (until |vDisp| < 1m)
-    // SAME signs = moving toward zero (positive vel decreases positive pos)
-    if (fabs(d.vDisp) > 1.0) {
-        bool movingCorrectWay = (d.vDisp > 0 && d.vY > 0.05) || (d.vDisp < 0 && d.vY < -0.05);
-        bool movingWrongWay = (d.vDisp > 0 && d.vY < -0.1) || (d.vDisp < 0 && d.vY > 0.1);
-
-        if (movingWrongWay) {
-            snprintf(action, actionLen, "STOP DRIFT V %+.1fm Vy%+.1f (trans)", d.vDisp, d.vY);
+        } else if (fabs(d.vY) >= fabs(d.vZ)) {
+            snprintf(action, actionLen, "STOP: %.1fm/s, drift %s",
+                     fabs(d.vY), d.vY > 0 ? "up" : "down");
             snprintf(key, keyLen, d.vY > 0 ? "Num8" : "Num2");
-        } else if (movingCorrectWay) {
-            snprintf(action, actionLen, "COAST V %+.1fm Vy%+.1f (trans)", d.vDisp, d.vY);
-            snprintf(key, keyLen, "wait");
         } else {
-            // pos>0 needs pos vel (Num2=up), pos<0 needs neg vel (Num8=down)
-            snprintf(action, actionLen, "MOVE V %+.1fm (trans mode)", d.vDisp);
-            snprintf(key, keyLen, d.vDisp > 0 ? "Num2" : "Num8");
+            snprintf(action, actionLen, "STOP: %.1fm/s %s",
+                     fabs(d.vZ), d.vZ > 0 ? "too fast" : "backing away");
+            snprintf(key, keyLen, d.vZ > 0 ? "Num9" : "Num6");
         }
         return;
     }
 
-    // Fine position - same logic but tighter thresholds
-    // SAME signs = moving toward zero (positive vel decreases positive pos)
-    // Keys: Left=Num1, Right=Num3, Up=Num2, Down=Num8
-    if (fabs(d.hDisp) > POS_FINE || fabs(d.vDisp) > POS_FINE) {
-        if (fabs(d.hDisp) >= fabs(d.vDisp)) {
-            bool movingCorrectWay = (d.hDisp > 0 && d.vX > 0.02) || (d.hDisp < 0 && d.vX < -0.02);
-            if (movingCorrectWay) {
-                snprintf(action, actionLen, "COAST H %+.2fm (trans)", d.hDisp);
-                snprintf(key, keyLen, "wait");
+    // ============ PHASE 2: ALIGN (attitude error too large) ============
+    // rotAxis components are in radians: x=pitch error, y=yaw error, z=roll error
+    double yawErr = fabs(rotAxis.y) * DEG;
+    double pitchErr = fabs(rotAxis.x) * DEG;
+    double rollErr = fabs(rotAxis.z) * DEG;
+
+    if (attError > 10.0) {
+        if (attError > 45.0) {
+            snprintf(action, actionLen, "ALIGN: off by %.0f%c, recommend dock align",
+                     attError, 0xB0);
+            snprintf(key, keyLen, "---");
+        } else if (rollErr > yawErr && rollErr > pitchErr) {
+            snprintf(action, actionLen, "ROLL %s %.0f%c",
+                     rotAxis.z > 0 ? "LEFT" : "RIGHT", rollErr, 0xB0);
+            snprintf(key, keyLen, rotAxis.z > 0 ? "Num7" : "Num9");
+        } else if (yawErr >= pitchErr) {
+            snprintf(action, actionLen, "ALIGN: yaw %s %.0f%c",
+                     rotAxis.y > 0 ? "left" : "right", yawErr, 0xB0);
+            snprintf(key, keyLen, rotAxis.y > 0 ? "Num1" : "Num3");
+        } else {
+            snprintf(action, actionLen, "ALIGN: pitch %s %.0f%c",
+                     rotAxis.x > 0 ? "down" : "up", pitchErr, 0xB0);
+            snprintf(key, keyLen, rotAxis.x > 0 ? "Num2" : "Num8");
+        }
+        return;
+    }
+
+    if (attError > 5.0) {
+        if (rollErr > yawErr && rollErr > pitchErr) {
+            snprintf(action, actionLen, "FINE: roll %s %.0f%c",
+                     rotAxis.z > 0 ? "left" : "right", rollErr, 0xB0);
+            snprintf(key, keyLen, rotAxis.z > 0 ? "Num7" : "Num9");
+        } else if (yawErr >= pitchErr) {
+            snprintf(action, actionLen, "FINE: yaw %s %.0f%c",
+                     rotAxis.y > 0 ? "left" : "right", yawErr, 0xB0);
+            snprintf(key, keyLen, rotAxis.y > 0 ? "Num1" : "Num3");
+        } else {
+            snprintf(action, actionLen, "FINE: pitch %s %.0f%c",
+                     rotAxis.x > 0 ? "down" : "up", pitchErr, 0xB0);
+            snprintf(key, keyLen, rotAxis.x > 0 ? "Num2" : "Num8");
+        }
+        return;
+    }
+
+    // ============ PHASE 3: TRANSLATE (lateral offset > 0.5m) ============
+    // Work on larger offset axis first. Null cross-axis velocity before switching.
+    double hOff = fabs(d.hDisp);
+    double vOff = fabs(d.vDisp);
+    bool hNeedsWork = hOff > 0.5;
+    bool vNeedsWork = vOff > 0.5;
+
+    if (hNeedsWork || vNeedsWork) {
+        // Pick axis with larger offset
+        bool doH = hNeedsWork && (!vNeedsWork || hOff >= vOff);
+
+        if (doH) {
+            // Null cross-axis velocity before lateral work
+            if (vNeedsWork && fabs(d.vY) > 0.15) {
+                snprintf(action, actionLen, "STOP DRIFT %s %.1fm/s",
+                         d.vY > 0 ? "up" : "down", fabs(d.vY));
+                snprintf(key, keyLen, d.vY > 0 ? "Num8" : "Num2");
+                return;
+            }
+
+            // Distance-scaled target speed
+            double targetSpd = (hOff > 50.0) ? 1.0 : (hOff > 10.0) ? 0.5 : (hOff > 2.0) ? 0.2 : 0.1;
+            // vel > 0 means moving in correct direction to reduce offset
+            double vel = (d.hDisp > 0) ? d.vX : -d.vX;
+            double brakeDist = vel * vel / 0.4;
+
+            if (vel < -0.1) {
+                snprintf(action, actionLen, "TRANSLATE %s %.1fm",
+                         d.hDisp > 0 ? "RIGHT" : "LEFT", hOff);
+                snprintf(key, keyLen, d.hDisp > 0 ? "Num3" : "Num1");
+            } else if (vel > 0.05 && (brakeDist > hOff * 0.8 || vel > targetSpd * 1.3)) {
+                snprintf(action, actionLen, "BRAKE %s %.1fm",
+                         d.hDisp > 0 ? "right" : "left", hOff);
+                snprintf(key, keyLen, d.hDisp > 0 ? "Num1" : "Num3");
+            } else if (vel > targetSpd * 0.7) {
+                snprintf(action, actionLen, "COAST %s %.1fm",
+                         d.hDisp > 0 ? "right" : "left", hOff);
+                snprintf(key, keyLen, "---");
             } else {
-                snprintf(action, actionLen, "Fine H %+.2fm (trans)", d.hDisp);
+                snprintf(action, actionLen, "TRANSLATE %s %.1fm",
+                         d.hDisp > 0 ? "RIGHT" : "LEFT", hOff);
                 snprintf(key, keyLen, d.hDisp > 0 ? "Num3" : "Num1");
             }
+            return;
         } else {
-            bool movingCorrectWay = (d.vDisp > 0 && d.vY > 0.02) || (d.vDisp < 0 && d.vY < -0.02);
-            if (movingCorrectWay) {
-                snprintf(action, actionLen, "COAST V %+.2fm (trans)", d.vDisp);
-                snprintf(key, keyLen, "wait");
+            // Null cross-axis velocity before lateral work
+            if (hNeedsWork && fabs(d.vX) > 0.15) {
+                snprintf(action, actionLen, "STOP DRIFT %s %.1fm/s",
+                         d.vX > 0 ? "right" : "left", fabs(d.vX));
+                snprintf(key, keyLen, d.vX > 0 ? "Num1" : "Num3");
+                return;
+            }
+
+            double targetSpd = (vOff > 50.0) ? 1.0 : (vOff > 10.0) ? 0.5 : (vOff > 2.0) ? 0.2 : 0.1;
+            double vel = (d.vDisp > 0) ? d.vY : -d.vY;
+            double brakeDist = vel * vel / 0.4;
+
+            if (vel < -0.1) {
+                snprintf(action, actionLen, "TRANSLATE %s %.1fm",
+                         d.vDisp > 0 ? "UP" : "DOWN", vOff);
+                snprintf(key, keyLen, d.vDisp > 0 ? "Num2" : "Num8");
+            } else if (vel > 0.05 && (brakeDist > vOff * 0.8 || vel > targetSpd * 1.3)) {
+                snprintf(action, actionLen, "BRAKE %s %.1fm",
+                         d.vDisp > 0 ? "up" : "down", vOff);
+                snprintf(key, keyLen, d.vDisp > 0 ? "Num8" : "Num2");
+            } else if (vel > targetSpd * 0.7) {
+                snprintf(action, actionLen, "COAST %s %.1fm",
+                         d.vDisp > 0 ? "up" : "down", vOff);
+                snprintf(key, keyLen, "---");
             } else {
-                snprintf(action, actionLen, "Fine V %+.2fm (trans)", d.vDisp);
+                snprintf(action, actionLen, "TRANSLATE %s %.1fm",
+                         d.vDisp > 0 ? "UP" : "DOWN", vOff);
                 snprintf(key, keyLen, d.vDisp > 0 ? "Num2" : "Num8");
             }
+            return;
         }
+    }
+
+    // ============ PHASE 4: APPROACH (closing distance) ============
+    // Speed tiers by distance
+    double targetVz;
+    if (d.dist > 100.0)     targetVz = 2.0;
+    else if (d.dist > 50.0) targetVz = 1.0;
+    else if (d.dist > 10.0) targetVz = 0.5;
+    else if (d.dist > 5.0)  targetVz = 0.3;
+    else                     targetVz = 0.1;
+
+    double vzError = d.vZ - targetVz;
+
+    if (d.dist < 2.0 && d.vZ > 0.05) {
+        snprintf(action, actionLen, "CLOSING (hold steady)");
+        snprintf(key, keyLen, "---");
         return;
     }
 
-    // Null any remaining lateral velocity before approach
-    // Keys: Left=Num1, Right=Num3, Up=Num2, Down=Num8
-    if (lateralVel > VEL_FINE) {
-        if (fabs(d.vX) >= fabs(d.vY)) {
-            snprintf(action, actionLen, "Null Vx %+.2f (trans)", d.vX);
-            snprintf(key, keyLen, d.vX > 0 ? "Num1" : "Num3");  // Oppose velocity to stop
+    if (fabs(vzError) > 0.15) {
+        if (vzError > 0) {
+            snprintf(action, actionLen, "BRAKE: %.1fm/s, target %.1fm/s", d.vZ, targetVz);
+            snprintf(key, keyLen, "Num9");
         } else {
-            snprintf(action, actionLen, "Null Vy %+.2f (trans)", d.vY);
-            snprintf(key, keyLen, d.vY > 0 ? "Num8" : "Num2");  // Oppose velocity to stop
+            snprintf(action, actionLen, "APPROACH: %.1fm/s, target %.1fm/s", d.vZ, targetVz);
+            snprintf(key, keyLen, "Num6");
         }
         return;
     }
 
-    // ============ PHASE 4: APPROACH ============
-    // Keys: Forward=Num6, Back=Num9
-    // vZ > 0 = approaching (moving forward), vZ < 0 = separating
-    if (d.dist > 10.0) {
-        double targetVz = 1.0;  // approach at 1 m/s (positive = forward)
-        double vzError = d.vZ - targetVz;
-        if (fabs(vzError) > 0.3) {
-            snprintf(action, actionLen, "APPROACH %.0fm (trans)", d.dist);
-            snprintf(key, keyLen, vzError > 0 ? "Num9" : "Num6");  // too fast->back, too slow->fwd
-            return;
-        }
-    } else if (d.dist > 2.0) {
-        double targetVz = 0.3;  // slow to 0.3 m/s
-        double vzError = d.vZ - targetVz;
-        if (fabs(vzError) > 0.1) {
-            snprintf(action, actionLen, "SLOW %.1fm (trans)", d.dist);
-            snprintf(key, keyLen, vzError > 0 ? "Num9" : "Num6");
-            return;
-        }
-    } else {
-        double targetVz = 0.1;  // creep at 0.1 m/s
-        double vzError = d.vZ - targetVz;
-        if (fabs(vzError) > 0.05) {
-            snprintf(action, actionLen, "CREEP %.2fm (trans)", d.dist);
-            snprintf(key, keyLen, vzError > 0 ? "Num9" : "Num6");
-            return;
-        }
+    if (d.vZ > 0.05) {
+        snprintf(action, actionLen, "COAST (closing)");
+        snprintf(key, keyLen, "---");
+        return;
     }
 
-    // All aligned - just hold
-    snprintf(action, actionLen, "HOLD closing %.2f m/s", -d.vZ);
+    // ============ PHASE 5: HOLD (everything good) ============
+    if (d.vZ > 0.02) {
+        snprintf(action, actionLen, "HOLD: closing %.1fm/s", d.vZ);
+    } else {
+        snprintf(action, actionLen, "HOLD: approach, Num6");
+        snprintf(key, keyLen, "Num6");
+        return;
+    }
     snprintf(key, keyLen, "---");
 }
 
-// Full auto-docking: align, translate, and approach
+// Helper: Compute relative angular velocity in our ship coords
+static VECTOR3 CalcRelAngVel(VESSEL* v, OBJHANDLE hTarget) {
+    VECTOR3 angVel, tgtAngVel;
+    v->GetAngularVel(angVel);
+    VESSEL* tgt = oapiGetVesselInterface(hTarget);
+    tgt->GetAngularVel(tgtAngVel);
+
+    MATRIX3 ourRotMat, tgtRotMat;
+    v->GetRotationMatrix(ourRotMat);
+    tgt->GetRotationMatrix(tgtRotMat);
+
+    VECTOR3 tgtAngVelGlobal = mul(tgtRotMat, tgtAngVel);
+    VECTOR3 tgtAngVelOurs = tmul(ourRotMat, tgtAngVelGlobal);
+    return _V(angVel.x - tgtAngVelOurs.x,
+              angVel.y - tgtAngVelOurs.y,
+              angVel.z - tgtAngVelOurs.z);
+}
+
+// Full auto-docking: sequential stages with precondition checks
 static void DockAutoApproach(VESSEL* v, OBJHANDLE hTarget, UINT tgtDock) {
+    // === PRECONDITION CHECKS ===
+    VECTOR3 angVel;
+    v->GetAngularVel(angVel);
+    double angVelMag = length(angVel);
+    if (angVelMag > 0.1) {
+        printf("You're tumbling (%.1f deg/s). Run kilrot first.\n", angVelMag * DEG);
+        return;
+    }
+
+    DockAlignData d;
+    if (!CalcDockAlignment(v, 0, hTarget, tgtDock, &d)) {
+        printf("Cannot calculate dock alignment.\n");
+        return;
+    }
+
+    VECTOR3 rotAxis;
+    double attError = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
+    if (d.dist < 2.0 && attError > 30.0) {
+        printf("Too close (%.1fm) and misaligned (%.0f deg). Back off first.\n",
+               d.dist, attError);
+        return;
+    }
+
     printf("Auto-docking... Press Enter to abort.\n\n");
 
-    const double ALIGN_THRESHOLD = 10.0;   // degrees - acceptable alignment for approach
-    const double POS_THRESHOLD = 0.5;      // meters - acceptable lateral position
-    const double DOCK_DIST = 0.3;          // meters - docking trigger distance
+    // === STAGE 1: ALIGN ===
+    printf("Stage 1: Aligning...\n");
+    DockAutoAlign(v, hTarget, tgtDock);
 
-    // Control gains
-    const double ROT_GAIN = 0.3;
-    const double ROT_DAMP = 2.0;
-    const double TRANS_GAIN = 0.5;         // translation proportional gain
-    const double TRANS_DAMP = 3.0;         // translation damping
-    const double APPROACH_SPEED = 0.5;     // m/s approach speed
-    const double CREEP_SPEED = 0.1;        // m/s final approach
+    // Check if user aborted during align
+    if (_kbhit()) {
+        _getch();
+        return;
+    }
+
+    // Verify alignment succeeded
+    attError = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
+    VECTOR3 relAngVel = CalcRelAngVel(v, hTarget);
+    if (attError > 5.0 || length(relAngVel) > 0.01) {
+        printf("Alignment incomplete (%.1f deg). Aborting.\n", attError);
+        return;
+    }
+
+    // === STAGE 2: APPROACH ===
+    printf("\nStage 2: Approaching...\n");
+
+    const double ROT_GAIN = 1.0;
+    const double ROT_DAMP = 3.0;
+    const double TRANS_GAIN = 0.5;
+    const double TRANS_DAMP = 3.0;
+    const double DOCK_DIST = 0.3;
 
     while (!_kbhit()) {
-        // Get alignment data for position/velocity
-        DockAlignData d;
         if (!CalcDockAlignment(v, 0, hTarget, tgtDock, &d)) {
             printf("\rCannot calculate alignment   ");
             Sleep(100);
             continue;
         }
 
-        // Get rotation axis for attitude control (same as dock align)
-        VECTOR3 rotAxis;
-        double attError = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
+        attError = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
+        relAngVel = CalcRelAngVel(v, hTarget);
 
-        // Get angular velocity relative to target (in our ship coords)
-        VECTOR3 angVel, tgtAngVel;
-        v->GetAngularVel(angVel);
-        VESSEL* tgtV = oapiGetVesselInterface(hTarget);
-        tgtV->GetAngularVel(tgtAngVel);
-
-        MATRIX3 ourRotMat, tgtRotMat;
-        v->GetRotationMatrix(ourRotMat);
-        tgtV->GetRotationMatrix(tgtRotMat);
-
-        VECTOR3 tgtAngVelGlobal = mul(tgtRotMat, tgtAngVel);
-        VECTOR3 tgtAngVelOurs = tmul(ourRotMat, tgtAngVelGlobal);
-        VECTOR3 relAngVel = _V(angVel.x - tgtAngVelOurs.x,
-                               angVel.y - tgtAngVelOurs.y,
-                               angVel.z - tgtAngVelOurs.z);
-
-        // Status line
         printf("\rDist:%.1fm H:%+.1f V:%+.1f Att:%.0f   ",
                d.dist, d.hDisp, d.vDisp, attError);
         fflush(stdout);
 
-        // Check if docked
+        // Done?
         if (d.dist < DOCK_DIST) {
             v->SetAttitudeRotLevel(_V(0, 0, 0));
             v->SetAttitudeLinLevel(_V(0, 0, 0));
@@ -1088,55 +1063,53 @@ static void DockAutoApproach(VESSEL* v, OBJHANDLE hTarget, UINT tgtDock) {
             break;
         }
 
-        // === ROTATION CONTROL ===
-        // Use same approach as DockAutoAlign - rotAxis from CalcDockAngularError
-        // Damp relative angular velocity so we track the target's rotation
+        // Safety: if attitude error exceeds 30°, kill all translation
+        if (attError > 30.0) {
+            v->SetAttitudeLinLevel(_V(0, 0, 0));
+            printf("\n\nAttitude error %.0f deg - stopping translation.\n", attError);
+            printf("Abort and restart, or run dock align first.\n");
+            // Keep running rotation control to try to recover
+        }
+
+        // === ROTATION: PD control, deactivate navmodes every tick ===
+        v->DeactivateNavmode(NAVMODE_KILLROT);
+        v->DeactivateNavmode(NAVMODE_PROGRADE);
+        v->DeactivateNavmode(NAVMODE_RETROGRADE);
+        v->DeactivateNavmode(NAVMODE_HLEVEL);
+        v->DeactivateNavmode(NAVMODE_NORMAL);
+        v->DeactivateNavmode(NAVMODE_ANTINORMAL);
+
         double rx = fmax(-1.0, fmin(1.0, -rotAxis.x * ROT_GAIN - relAngVel.x * ROT_DAMP));
         double ry = fmax(-1.0, fmin(1.0, -rotAxis.y * ROT_GAIN - relAngVel.y * ROT_DAMP));
         double rz = fmax(-1.0, fmin(1.0, -rotAxis.z * ROT_GAIN - relAngVel.z * ROT_DAMP));
-
         v->SetAttitudeRotLevel(_V(rx, ry, rz));
 
-        // === TRANSLATION CONTROL ===
-        // Only translate if reasonably aligned
-        double tx = 0, ty = 0, tz = 0;
-
-        if (attError < 30.0) {  // Only translate if within 30 degrees
-            // Lateral translation: drive position errors to zero
-            // Based on empirical data: positive velocity decreases positive position
-            // So: hDisp > 0 needs positive vX, which needs positive tx
+        // === TRANSLATION: PD control on all axes simultaneously ===
+        if (attError < 30.0) {
+            // Lateral: drive hDisp/vDisp to zero with speed cap scaled by offset
             double targetVx = d.hDisp * TRANS_GAIN;
             double targetVy = d.vDisp * TRANS_GAIN;
+            double lateralOff = fmax(fabs(d.hDisp), fabs(d.vDisp));
+            double latCap = (lateralOff > 50.0) ? 1.5 : (lateralOff > 10.0) ? 1.0 : 0.5;
+            targetVx = fmax(-latCap, fmin(latCap, targetVx));
+            targetVy = fmax(-latCap, fmin(latCap, targetVy));
 
-            // Limit target velocity
-            targetVx = fmax(-0.5, fmin(0.5, targetVx));
-            targetVy = fmax(-0.5, fmin(0.5, targetVy));
+            double tx = fmax(-1.0, fmin(1.0, (targetVx - d.vX) * TRANS_DAMP));
+            double ty = fmax(-1.0, fmin(1.0, (targetVy - d.vY) * TRANS_DAMP));
 
-            // PD control: drive actual velocity toward target velocity
-            tx = (targetVx - d.vX) * TRANS_DAMP;
-            ty = (targetVy - d.vY) * TRANS_DAMP;
+            // Forward: speed tiered by distance
+            double targetVz;
+            if (d.dist > 200.0)      targetVz = 2.0;
+            else if (d.dist > 50.0)  targetVz = 1.0;
+            else if (d.dist > 10.0)  targetVz = 0.5;
+            else if (d.dist > 5.0)   targetVz = 0.3;
+            else                      targetVz = 0.1;
 
-            // Approach: only if well-aligned and centered
-            if (attError < ALIGN_THRESHOLD &&
-                fabs(d.hDisp) < POS_THRESHOLD * 3 &&
-                fabs(d.vDisp) < POS_THRESHOLD * 3) {
-
-                double targetVz = (d.dist > 5.0) ? APPROACH_SPEED : CREEP_SPEED;
-                tz = (targetVz - d.vZ) * TRANS_DAMP;
-            } else {
-                // Not aligned - hold position or back off if too close
-                double targetVz = (d.dist < 3.0) ? -0.1 : 0.0;
-                tz = (targetVz - d.vZ) * TRANS_DAMP;
-            }
+            double tz = fmax(-1.0, fmin(1.0, (targetVz - d.vZ) * TRANS_DAMP));
+            v->SetAttitudeLinLevel(_V(tx, ty, tz));
         }
 
-        tx = fmax(-1.0, fmin(1.0, tx));
-        ty = fmax(-1.0, fmin(1.0, ty));
-        tz = fmax(-1.0, fmin(1.0, tz));
-
-        v->SetAttitudeLinLevel(_V(tx, ty, tz));
-
-        Sleep(100);  // 10 Hz update
+        Sleep(100);
     }
 
     // Stop all thrusters
@@ -1226,20 +1199,24 @@ void PrintDock(const char* arg) {
                 continue;
             }
 
+            // Get attitude error for guidance
+            VECTOR3 rotAxis;
+            double attError = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
+
             // Get action
             char action[64], key[16], clipText[128];
-            GetNextDockAction(align, action, sizeof(action), key, sizeof(key));
+            GetNextDockAction(align, attError, rotAxis,
+                              action, sizeof(action), key, sizeof(key));
 
-            // Format: distance, relative speed, action, key
-            double relSpeed = sqrt(align.vX*align.vX + align.vY*align.vY + align.vZ*align.vZ);
-            snprintf(clipText, sizeof(clipText), "%.0fm %.1fm/s: %s, %s",
-                     align.dist, relSpeed, action, key);
+            // Format: distance, closing speed, action, key
+            snprintf(clipText, sizeof(clipText), "%.0fm %+.1fm/s: %s, %s",
+                     align.dist, align.vZ, action, key);
 
             // Only update clipboard if changed (reduces chatter)
             if (strcmp(clipText, lastClip) != 0) {
                 CopyToClipboard(clipText);
                 strcpy(lastClip, clipText);
-                printf("%s\n", clipText);  // Also print for reference
+                printf("%s\n", clipText);
             }
 
             Sleep(1500);
@@ -1438,54 +1415,52 @@ void PrintDock(const char* arg) {
     oapiGetObjectName(hTarget, tgtName, 256);
     UINT tgtDocks = tgtVessel ? tgtVessel->DockCount() : 0;
 
-    if (tgtDocks > 1) {
-        printf("Target: %s port %u\n", tgtName, tgtDock);
-    }
-
-    // Basic distance and velocity
-    VECTOR3 relPos, relVel;
-    v->GetRelativePos(hTarget, relPos);
-    v->GetRelativeVel(hTarget, relVel);
-
-    double dist = length(relPos);
-    char buf[64];
-    FormatDistance(dist, buf, sizeof(buf));
-    printf("Dist: %s\n", buf);
-
-    // Closure rate (positive = approaching)
-    double cvel = -dotp(relVel, relPos) / dist;
-    printf("CRate: %.2f m/s\n", cvel);
+    // Header: target and port info
+    const char* idsTag = (ndata.type == TRANSMITTER_IDS) ? " [IDS]" : "";
+    printf("Dock: %s port %u%s\n", tgtName, tgtDock, idsTag);
 
     // Calculate alignment data if we have docking ports
     if (nDocks > 0 && tgtDocks > 0) {
         DockAlignData align;
 
         if (CalcDockAlignment(v, refDock, hTarget, tgtDock, &align)) {
-            // Port-to-port distance
+            // Distance and closing speed
+            char buf[64];
             FormatDistance(align.dist, buf, sizeof(buf));
-            printf("Port Dist: %s\n", buf);
+            printf("Distance: %s, closing %.1f m/s\n", buf, align.vZ);
 
-            // Closure rate in dock frame
-            printf("Closing: %.2f m/s\n", -align.vZ);
+            // Lateral offset
+            printf("Offset: H%+.1fm V%+.1fm\n", align.hDisp, align.vDisp);
 
-            // Show attitude if it's off - helps user understand what needs fixing
-            double maxAtt = fmax(fabs(align.yaw), fmax(fabs(align.pitch), fabs(align.bank)));
-            if (maxAtt > 10.0) {
-                printf("\nAttitude (rotation mode, Num/ to toggle):\n");
-                printf("  Yaw: %+.0f deg\n", align.yaw);
-                printf("  Pitch: %+.0f deg\n", align.pitch);
-                printf("  Roll: %+.0f deg\n", align.bank);
-            }
+            // Attitude error from angular error calculation
+            VECTOR3 rotAxis;
+            double attError = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
+            double yawErr = fabs(rotAxis.y) * DEG;
+            double pitchErr = fabs(rotAxis.x) * DEG;
+            double rollErr = fabs(rotAxis.z) * DEG;
+            printf("Attitude: %.0f%c off (yaw %.0f%c pitch %.0f%c roll %.0f%c)\n",
+                   attError, 0xB0, yawErr, 0xB0, pitchErr, 0xB0, rollErr, 0xB0);
 
-            // Get next action
+            // Next action
             char action[64], key[16];
-            GetNextDockAction(align, action, sizeof(action), key, sizeof(key));
-
-            printf("\nAction: %s\n", action);
-            printf("Key: %s\n", key);
+            GetNextDockAction(align, attError, rotAxis,
+                              action, sizeof(action), key, sizeof(key));
+            printf("Next: %s, %s\n", action, key);
         }
     } else {
-        // No dock ports - just show basic velocity info
+        // No dock ports - just show basic distance/velocity
+        VECTOR3 relPos, relVel;
+        v->GetRelativePos(hTarget, relPos);
+        v->GetRelativeVel(hTarget, relVel);
+
+        double dist = length(relPos);
+        char buf[64];
+        FormatDistance(dist, buf, sizeof(buf));
+        printf("Dist: %s\n", buf);
+
+        double cvel = -dotp(relVel, relPos) / dist;
+        printf("CRate: %.2f m/s\n", cvel);
+
         MATRIX3 rot;
         v->GetRotationMatrix(rot);
         VECTOR3 lv = tmul(rot, relVel);

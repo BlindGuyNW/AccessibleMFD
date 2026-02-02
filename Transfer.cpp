@@ -775,10 +775,10 @@ void PrintHelp() {
     printf("  btn, buttons <l|r|n> - MFD button labels\n");
     printf("  press <l|r|n> <btn#> - Press MFD button (0-11)\n");
     printf("  cp, cockpit - Cockpit mode (glass/2D panel/virtual)\n");
-    printf("  d, dock    - Docking guidance\n");
+    printf("  d, dock    - Docking status and guidance\n");
     printf("    d auto [n] - Auto-dock to target port n (default: IDS port)\n");
     printf("    d align  - Auto-align attitude only\n");
-    printf("    d watch  - Continuous updates to clipboard\n");
+    printf("    d watch  - Continuous guidance to clipboard (manual docking)\n");
     printf("    d ports  - List our ports and target ports\n");
     printf("  fu, fuel   - Fuel status (per tank, dV, flow)\n");
     printf("    fuel <n> - Detailed info for tank n\n");
