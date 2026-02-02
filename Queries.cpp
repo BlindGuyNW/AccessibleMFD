@@ -192,18 +192,34 @@ static void DockAutoAlign(VESSEL* v, OBJHANDLE hTarget, UINT tgtDock) {
         VECTOR3 rotAxis;
         double error = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
 
-        // Get current angular velocity in ship coords
-        VECTOR3 angVel;
+        // Get angular velocity relative to target (in our ship coords)
+        VECTOR3 angVel, tgtAngVel;
         v->GetAngularVel(angVel);
+        VESSEL* tgtV = oapiGetVesselInterface(hTarget);
+        tgtV->GetAngularVel(tgtAngVel);
+
+        MATRIX3 ourRotMat, tgtRotMat;
+        v->GetRotationMatrix(ourRotMat);
+        tgtV->GetRotationMatrix(tgtRotMat);
+
+        // Convert target angular velocity: target local -> global -> our local
+        VECTOR3 tgtAngVelGlobal = mul(tgtRotMat, tgtAngVel);
+        VECTOR3 tgtAngVelOurs = tmul(ourRotMat, tgtAngVelGlobal);
+        VECTOR3 relAngVel = _V(angVel.x - tgtAngVelOurs.x,
+                               angVel.y - tgtAngVelOurs.y,
+                               angVel.z - tgtAngVelOurs.z);
+
         AlignLog("Angular velocity: %.4f, %.4f, %.4f rad/s\n", angVel.x, angVel.y, angVel.z);
+        AlignLog("Relative angular velocity: %.4f, %.4f, %.4f rad/s\n",
+                 relAngVel.x, relAngVel.y, relAngVel.z);
 
         // Update display
         printf("\rError: %.1f deg   ", error);
         fflush(stdout);
 
-        // Check if aligned and nearly stopped
-        double angVelMag = length(angVel);
-        if (error < ALIGNED_THRESHOLD && angVelMag < 0.01) {
+        // Check if aligned and relative rotation nearly zero
+        double relAngVelMag = length(relAngVel);
+        if (error < ALIGNED_THRESHOLD && relAngVelMag < 0.01) {
             // Stop rotation
             v->SetAttitudeRotLevel(_V(0, 0, 0));
             AlignLog("ALIGNED! Stopping.\n");
@@ -215,9 +231,9 @@ static void DockAutoAlign(VESSEL* v, OBJHANDLE hTarget, UINT tgtDock) {
         // NEGATE rotAxis because cross product gives rotation FROM current TO desired,
         // but SetAttitudeRotLevel applies rotation TO the ship
         // Also add damping term to reduce angular velocity
-        double px = max(-1.0, min(1.0, -rotAxis.x * RATE_GAIN - angVel.x * DAMP_GAIN));
-        double py = max(-1.0, min(1.0, -rotAxis.y * RATE_GAIN - angVel.y * DAMP_GAIN));
-        double pz = max(-1.0, min(1.0, -rotAxis.z * RATE_GAIN - angVel.z * DAMP_GAIN));
+        double px = max(-1.0, min(1.0, -rotAxis.x * RATE_GAIN - relAngVel.x * DAMP_GAIN));
+        double py = max(-1.0, min(1.0, -rotAxis.y * RATE_GAIN - relAngVel.y * DAMP_GAIN));
+        double pz = max(-1.0, min(1.0, -rotAxis.z * RATE_GAIN - relAngVel.z * DAMP_GAIN));
 
         AlignLog("Control output: px=%.3f, py=%.3f, pz=%.3f\n", px, py, pz);
 
@@ -706,13 +722,31 @@ static bool CalcDockAlignment(VESSEL* v, UINT refDock, OBJHANDLE hTarget, UINT t
     // Normalize bank to avoid ±180° oscillation - always use positive for ~180°
     if (data->bank < -175.0) data->bank += 360.0;  // -180 becomes +180
 
-    // Velocity in dock frame (target's velocity relative to us)
+    // Velocity: dock-to-dock relative velocity (accounts for target rotation)
+    // GetRelativeVel returns our COM velocity minus target COM velocity (global)
     VECTOR3 relVel;
     v->GetRelativeVel(hTarget, relVel);
-    VECTOR3 relVelLocal = tmul(ourRotMat, relVel);
+
+    // Add rotational velocity of each dock port.
+    // In Orbiter's left-handed frame, tangential velocity is v = -crossp(ω, r)
+    VECTOR3 ourAngVel, tgtAngVel;
+    v->GetAngularVel(ourAngVel);
+    tgt->GetAngularVel(tgtAngVel);
+
+    VECTOR3 ourAngVelGlobal = mul(ourRotMat, ourAngVel);
+    VECTOR3 tgtAngVelGlobal = mul(tgtRotMat, tgtAngVel);
+
+    // Dock offsets in global frame (already computed: ourPos/tgtPos are local)
+    VECTOR3 ourDockOffset = mul(ourRotMat, ourPos);
+    VECTOR3 tgtDockOffset = mul(tgtRotMat, tgtPos);
+
+    // Dock-to-dock relative velocity = COM relative vel + our dock rot vel - target dock rot vel
+    VECTOR3 dockRelVel = relVel - crossp(ourAngVelGlobal, ourDockOffset)
+                                + crossp(tgtAngVelGlobal, tgtDockOffset);
+
+    VECTOR3 relVelLocal = tmul(ourRotMat, dockRelVel);
     VECTOR3 relVelDock = mul(dockFrame, relVelLocal);
-    // GetRelativeVel returns OUR velocity relative to target
-    // Positive = we're moving in that direction relative to target
+    // Positive = we're moving in that direction relative to target dock
     data->vX = relVelDock.x;
     data->vY = relVelDock.y;
     data->vZ = relVelDock.z;
@@ -1025,9 +1059,21 @@ static void DockAutoApproach(VESSEL* v, OBJHANDLE hTarget, UINT tgtDock) {
         VECTOR3 rotAxis;
         double attError = CalcDockAngularError(v, 0, hTarget, tgtDock, &rotAxis);
 
-        // Get angular velocity for damping
-        VECTOR3 angVel;
+        // Get angular velocity relative to target (in our ship coords)
+        VECTOR3 angVel, tgtAngVel;
         v->GetAngularVel(angVel);
+        VESSEL* tgtV = oapiGetVesselInterface(hTarget);
+        tgtV->GetAngularVel(tgtAngVel);
+
+        MATRIX3 ourRotMat, tgtRotMat;
+        v->GetRotationMatrix(ourRotMat);
+        tgtV->GetRotationMatrix(tgtRotMat);
+
+        VECTOR3 tgtAngVelGlobal = mul(tgtRotMat, tgtAngVel);
+        VECTOR3 tgtAngVelOurs = tmul(ourRotMat, tgtAngVelGlobal);
+        VECTOR3 relAngVel = _V(angVel.x - tgtAngVelOurs.x,
+                               angVel.y - tgtAngVelOurs.y,
+                               angVel.z - tgtAngVelOurs.z);
 
         // Status line
         printf("\rDist:%.1fm H:%+.1f V:%+.1f Att:%.0f   ",
@@ -1044,9 +1090,10 @@ static void DockAutoApproach(VESSEL* v, OBJHANDLE hTarget, UINT tgtDock) {
 
         // === ROTATION CONTROL ===
         // Use same approach as DockAutoAlign - rotAxis from CalcDockAngularError
-        double rx = fmax(-1.0, fmin(1.0, -rotAxis.x * ROT_GAIN - angVel.x * ROT_DAMP));
-        double ry = fmax(-1.0, fmin(1.0, -rotAxis.y * ROT_GAIN - angVel.y * ROT_DAMP));
-        double rz = fmax(-1.0, fmin(1.0, -rotAxis.z * ROT_GAIN - angVel.z * ROT_DAMP));
+        // Damp relative angular velocity so we track the target's rotation
+        double rx = fmax(-1.0, fmin(1.0, -rotAxis.x * ROT_GAIN - relAngVel.x * ROT_DAMP));
+        double ry = fmax(-1.0, fmin(1.0, -rotAxis.y * ROT_GAIN - relAngVel.y * ROT_DAMP));
+        double rz = fmax(-1.0, fmin(1.0, -rotAxis.z * ROT_GAIN - relAngVel.z * ROT_DAMP));
 
         v->SetAttitudeRotLevel(_V(rx, ry, rz));
 
